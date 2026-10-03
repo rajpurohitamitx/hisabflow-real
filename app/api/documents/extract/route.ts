@@ -1,0 +1,7 @@
+import { NextResponse } from "next/server";
+import OpenAI from "openai";
+import { requireSession } from "@/lib/auth";
+import { db } from "@/lib/db";
+export const runtime="nodejs";
+export const maxDuration=120;
+export async function POST(req:Request){try{const s=await requireSession();if(!process.env.OPENAI_API_KEY)return NextResponse.json({error:"Document AI needs OPENAI_API_KEY."},{status:503});const form=await req.formData();const file=form.get("file");if(!(file instanceof File))return NextResponse.json({error:"File required."},{status:400});const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY});const uploaded=await client.files.create({file,purpose:"user_data"});const response=await client.responses.create({model:process.env.OPENAI_TEXT_MODEL||"gpt-5",input:[{role:"system",content:"Extract structured Indian business document data. Never post transactions. Return JSON with document_type, supplier/customer, invoice_number, date, totals, taxes, line_items, confidence and warnings. Preserve exact numbers."},{role:"user",content:[{type:"input_file",file_id:uploaded.id} as any]}]});const extraction=JSON.parse(response.output_text||"{}");const doc=await db.document.create({data:{businessId:s.businessId,fileName:file.name,storageKey:uploaded.id,mimeType:file.type||"application/octet-stream",status:"REVIEWED",extraction}});return NextResponse.json({ok:true,document:doc,extraction});}catch(e:any){return NextResponse.json({error:e.message||"Extraction failed"},{status:400})}}

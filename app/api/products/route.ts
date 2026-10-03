@@ -1,0 +1,8 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { requireSession } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { audit } from "@/lib/audit";
+const schema=z.object({name:z.string().min(1),sku:z.string().optional(),barcode:z.string().optional(),category:z.string().optional(),unit:z.string().default("piece"),purchasePrice:z.coerce.number().min(0).default(0),sellingPrice:z.coerce.number().min(0).default(0),stock:z.coerce.number().min(0).default(0),reorderPoint:z.coerce.number().min(0).default(0),gstRate:z.coerce.number().min(0).max(100).default(0)});
+export async function GET(req:Request){try{const s=await requireSession();const q=new URL(req.url).searchParams.get("q")||"";const products=await db.product.findMany({where:{businessId:s.businessId,archived:false,OR:q?[{name:{contains:q,mode:"insensitive"}},{sku:{contains:q,mode:"insensitive"}},{barcode:{contains:q}}]:undefined},orderBy:{name:"asc"},take:200});return NextResponse.json({products});}catch(e:any){return NextResponse.json({error:e.message},{status:401});}}
+export async function POST(req:Request){try{const s=await requireSession();const d=schema.parse(await req.json());const p=await db.product.create({data:{businessId:s.businessId,...d}});if(d.stock>0) await db.inventoryMovement.create({data:{businessId:s.businessId,productId:p.id,type:"ADJUSTMENT",quantity:d.stock,beforeStock:0,afterStock:d.stock,note:"Opening stock"}});await audit({businessId:s.businessId,userId:s.user.id,action:"PRODUCT_CREATED",entityType:"Product",entityId:p.id,after:p});return NextResponse.json({product:p},{status:201});}catch(e:any){return NextResponse.json({error:e?.issues?.[0]?.message||e.message},{status:400});}}

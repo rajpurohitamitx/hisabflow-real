@@ -1,0 +1,2 @@
+import AskHisab from "@/components/AskHisab";
+export default function AskPage(){return <div className="mx-auto max-w-5xl px-5 py-7 lg:px-8"><div className="mb-6"><div className="text-sm font-semibold text-[#7b8a83]">AI business workspace</div><h1 className="mt-1 text-3xl font-black">Ask Hisab Flow</h1><p className="mt-1 text-sm text-[#718078]">Talk naturally. Hisab Flow interprets first, validates second, and executes only through the business engine.</p></div><AskHisab/></div>}

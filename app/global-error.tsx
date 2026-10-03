@@ -1,0 +1,2 @@
+'use client';
+export default function GlobalError({reset}:{error:Error & {digest?:string};reset:()=>void}){return <html><body><main style={{fontFamily:'system-ui',padding:40,textAlign:'center'}}><h1>Hisab Flow needs a refresh</h1><p>We hit an unexpected application error. Your saved business records are not intentionally removed.</p><button onClick={()=>reset()} style={{padding:'12px 20px',marginTop:20}}>Reload</button></main></body></html>}

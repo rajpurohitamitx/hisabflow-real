@@ -1,0 +1,5 @@
+import { NextResponse } from "next/server";
+import { requireSession } from "@/lib/auth";
+import { createSale } from "@/lib/services/business";
+export async function GET(){try{const s=await requireSession();const sales=await (await import("@/lib/db")).db.sale.findMany({where:{businessId:s.businessId},include:{customer:true,items:true},orderBy:{occurredAt:"desc"},take:100});return NextResponse.json({sales});}catch(e:any){return NextResponse.json({error:e.message},{status:401});}}
+export async function POST(req:Request){try{const s=await requireSession();const b=await req.json();const sale=await createSale({businessId:s.businessId,userId:s.user.id,customerId:b.customerId||null,items:b.items,payment:b.payment||0,paymentMethod:b.paymentMethod||"CASH",occurredAt:b.occurredAt?new Date(b.occurredAt):undefined,notes:b.notes,source:b.source||"manual"});return NextResponse.json({sale},{status:201});}catch(e:any){return NextResponse.json({error:e.message},{status:400});}}
