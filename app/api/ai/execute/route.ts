@@ -8,7 +8,7 @@ import { money } from "@/lib/utils";
 export async function POST(req:Request){
   try{
     const s=await requireSession(); const {actionId,confirmed=false}=await req.json();
-    const action=await db.aiAction.findFirst({where:{id:actionId,businessId:s.businessId}}); if(!action) return NextResponse.json({error:"AI action not found."},{status:404});
+    const action=await db.aIAction.findFirst({where:{id:actionId,businessId:s.businessId}}); if(!action) return NextResponse.json({error:"AI action not found."},{status:404});
     if(action.status==="EXECUTED") return NextResponse.json({ok:true,result:action.result});
     if(action.risk!=="LOW"&&!confirmed) return NextResponse.json({error:"Confirmation required before this financial action.",requiresConfirmation:true,action},{status:409});
     const e=action.entities as any; let result:any;
@@ -64,7 +64,7 @@ export async function POST(req:Request){
       }
       default: return NextResponse.json({error:"This intent is not executable yet. The UI will not pretend it is complete."},{status:422});
     }
-    await db.aiAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
+    await db.aIAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
     await db.auditLog.create({data:{businessId:s.businessId,userId:s.user.id,actorType:"AI",action:"AI_ACTION_EXECUTED",entityType:"AIAction",entityId:action.id,after:result as any}});
     return NextResponse.json({ok:true,result});
   }catch(e:any){return NextResponse.json({error:e.message},{status:400});}

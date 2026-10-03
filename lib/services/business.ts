@@ -50,7 +50,7 @@ export async function receivePayment(input:{businessId:string;userId?:string;cus
   if (input.customerId && input.supplierId) throw new Error("Choose either customer or supplier, not both.");
   const result = await db.$transaction(async tx => {
     let saleId = input.saleId;
-    let kind = PaymentKind.CUSTOMER_RECEIPT;
+    let kind: PaymentKind = PaymentKind.CUSTOMER_RECEIPT;
     if (input.customerId) {
       const customer = await tx.customer.findFirst({where:{id:input.customerId,businessId:input.businessId,archived:false}});
       if(!customer) throw new Error("Customer is not part of this business.");
