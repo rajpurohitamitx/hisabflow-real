@@ -42,14 +42,66 @@ export async function POST(req: Request) {
       "Hisab Flow", "rupees", "INR", "cash", "UPI", "credit", "balance", "bill", "invoice", "sale", "purchase", "payment", "stock", "chain", "ring",
     ])).filter(x => x && x.length > 1).slice(0, 1000);
 
-    const audio = Buffer.from(await file.arrayBuffer()).toString("base64");
+    const bytes = Buffer.from(await file.arrayBuffer());
     const mimeType = file.type || "audio/webm";
 
-    // Use the Generate Content REST endpoint with inlineData. The previous build
-    // sent raw base64 audio to the Interactions API as `data`, while the documented
-    // Interactions REST flow expects an uploaded Files API URI. For short microphone
-    // recordings, inlineData through generateContent is simpler and works directly
-    // from a Vercel serverless function.
+    // Gemini 3.5 Transcribe's documented REST flow uploads the audio through
+    // the Files API first, then passes the returned file URI to generateContent.
+    // This is more reliable than sending microphone WebM as inlineData.
+    const displayName = `hisabflow-voice-${Date.now()}.webm`;
+
+    // Use the documented resumable Files API flow. The Transcribe model's
+    // REST examples upload the audio first and then reference the returned
+    // file URI from generateContent.
+    const initResponse = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(key)}`,
+      {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": key,
+          "x-goog-upload-protocol": "resumable",
+          "x-goog-upload-command": "start",
+          "x-goog-upload-header-content-length": String(bytes.length),
+          "x-goog-upload-header-content-type": mimeType,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ file: { display_name: displayName } }),
+        cache: "no-store",
+      },
+    );
+
+    if (!initResponse.ok) {
+      const initData = await initResponse.json().catch(() => ({}));
+      throw new Error(initData?.error?.message || `Gemini file upload initialization failed (${initResponse.status}).`);
+    }
+
+    const uploadUrl = initResponse.headers.get("x-goog-upload-url");
+    if (!uploadUrl) {
+      throw new Error("Gemini did not return an upload URL for the voice recording.");
+    }
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        "content-length": String(bytes.length),
+        "x-goog-upload-offset": "0",
+        "x-goog-upload-command": "upload, finalize",
+      },
+      body: bytes,
+      cache: "no-store",
+    });
+
+    const uploadData = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok) {
+      throw new Error(uploadData?.error?.message || `Gemini audio upload failed (${uploadResponse.status}).`);
+    }
+
+    const fileUri = uploadData?.file?.uri;
+    const uploadedMimeType = uploadData?.file?.mimeType || mimeType;
+    if (!fileUri) {
+      throw new Error("Gemini uploaded the recording but did not return a file URI.");
+    }
+
     const generationConfig: any = {
       audioTranscriptionConfig: {
         mode: "SMART",
@@ -69,13 +121,10 @@ export async function POST(req: Request) {
             {
               parts: [
                 {
-                  inlineData: {
-                    mimeType,
-                    data: audio,
+                  fileData: {
+                    fileUri,
+                    mimeType: uploadedMimeType,
                   },
-                },
-                {
-                  text: "Transcribe the spoken audio accurately. Return only the spoken transcription. Preserve names, products, quantities, currencies, numbers, Hindi/Tamil/Tanglish/Hinglish and other code-switched business speech. Do not answer the speaker or summarize the audio.",
                 },
               ],
             },
@@ -100,7 +149,7 @@ export async function POST(req: Request) {
 
     if (!text) {
       throw new Error(
-        "Gemini received the audio but returned no transcription. Please try again with a clear 1–15 second recording."
+        "Gemini processed the audio but returned no transcription. Please try a clear 1–15 second recording."
       );
     }
 
