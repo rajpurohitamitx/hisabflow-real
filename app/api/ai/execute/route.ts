@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { createExpense, receivePayment, createSale, createPurchase } from "@/lib/services/business";
 import { customerBalance, dashboardSummary } from "@/lib/services/business";
 import { money } from "@/lib/utils";
+import { geminiJson, isGeminiEnabled } from "@/lib/ai/gemini";
 
 export async function POST(req:Request){
   try{
@@ -13,11 +14,25 @@ export async function POST(req:Request){
     if(action.risk!=="LOW"&&!confirmed) return NextResponse.json({error:"Confirmation required before this financial action.",requiresConfirmation:true,action},{status:409});
     const e=action.entities as any; let result:any;
     switch(action.intent){
-      case "RECEIVE_PAYMENT":
-        if(!e.customerId) return NextResponse.json({error:"Which customer should receive this payment?",requiresCustomer:true,matches:e.matches||[]},{status:409});
+      case "RECEIVE_PAYMENT": {
         if(!e.amount) return NextResponse.json({error:"What amount did the customer pay?"},{status:409});
-        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId:e.customerId,amount:e.amount,method:"CASH",source:"ai"});
-        result={message:`${money(e.amount)} received from ${e.customerName||"customer"}.`,payment:result}; break;
+        let customerId=e.customerId as string|undefined;
+        let customerName=String(e.customerName||e.proposedCustomerName||"").trim();
+        // A new customer is created only after the AI action has reached the explicit
+        // confirmation step. The accounting mutation and payment are then committed
+        // through the same deterministic business service flow.
+        if(!customerId && e.createCustomer===true && customerName){
+          const existing=await db.customer.findFirst({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}}});
+          if(existing){ customerId=existing.id; customerName=existing.name; }
+          else {
+            const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
+            customerId=created.id; customerName=created.name;
+          }
+        }
+        if(!customerId) return NextResponse.json({error:"Which customer should receive this payment?",requiresCustomer:true,matches:e.matches||[],canCreateCustomer:Boolean(e.proposedCustomerName)},{status:409});
+        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:e.paymentMethod||"CASH",source:"ai"});
+        result={message:`${money(e.amount)} received from ${customerName||"customer"}.`,payment:result,customerId,customerName}; break;
+      }
       case "CREATE_REMINDER":
         {const now=new Date();const due=new Date(now);const day=due.getDay();const delta=(8-day)%7||7;due.setDate(due.getDate()+delta);due.setHours(9,0,0,0);const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId,title:e.title||"Customer follow-up",dueAt:due,channel:"in_app"}});result={message:`Follow-up reminder created for next Monday at 9:00 AM.`,reminder:r};}
         break;
@@ -44,6 +59,21 @@ export async function POST(req:Request){
         {const [sales,purchases,expenses]=await Promise.all([db.sale.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.purchase.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.expense.aggregate({where:{businessId:s.businessId},_sum:{amount:true}})]);const revenue=Number(sales._sum.total||0),cost=Number(purchases._sum.total||0),expense=Number(expenses._sum.amount||0);result={message:`Recorded revenue is ${money(revenue)}, purchases are ${money(cost)}, expenses are ${money(expense)} and the simple operating difference is ${money(revenue-cost-expense)}.`,revenue,purchases:cost,expenses:expense,operatingDifference:revenue-cost-expense};} break;
       case "SEARCH_BUSINESS":
         {const q=String(e.query||"");const [customers,products,sales,purchases]=await Promise.all([db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.product.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.sale.findMany({where:{businessId:s.businessId,invoiceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}}),db.purchase.findMany({where:{businessId:s.businessId,referenceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}})]);result={message:`Search completed for “${q}”.`,customers,products,sales,purchases};} break;
+      case "GENERAL_BUSINESS_QUERY": {
+        const d=await dashboardSummary(s.businessId);
+        if(isGeminiEnabled()){
+          const [customers,products,sales,purchases,expenses]=await Promise.all([
+            db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{name:true,phone:true},take:100}),
+            db.product.findMany({where:{businessId:s.businessId,archived:false},select:{name:true,stock:true,reorderPoint:true},take:100}),
+            db.sale.findMany({where:{businessId:s.businessId,status:"CONFIRMED"},select:{occurredAt:true,total:true,customer:{select:{name:true}}},orderBy:{occurredAt:"desc"},take:50}),
+            db.purchase.findMany({where:{businessId:s.businessId,status:"CONFIRMED"},select:{occurredAt:true,total:true,supplier:{select:{name:true}}},orderBy:{occurredAt:"desc"},take:50}),
+            db.expense.findMany({where:{businessId:s.businessId},select:{occurredAt:true,amount:true,category:true},orderBy:{occurredAt:"desc"},take:50}),
+          ]);
+          const answer=await geminiJson([{role:"user",content:`You are Hisab Flow's business answer layer. Answer the user's question naturally and concisely using ONLY the supplied live business context. Do not invent facts. If the data is insufficient, say what is missing. User question: ${String(e.query||"")}\nLive dashboard: ${JSON.stringify(d)}\nRecent customers: ${JSON.stringify(customers)}\nProducts/stock: ${JSON.stringify(products)}\nRecent sales: ${JSON.stringify(sales)}\nRecent purchases: ${JSON.stringify(purchases)}\nRecent expenses: ${JSON.stringify(expenses)}\nReturn JSON: {"message":"string"}`}]);
+          result={message:String(answer?.message||"I found the relevant business data, but I couldn't summarize it yet.")};
+        } else result={message:`Current recorded sales are ${money(d.sales)} and outstanding is ${money(d.outstanding)}.`};
+        break;
+      }
       case "CREATE_SALE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the sale, but need the product and quantity.",needsDetails:true},{status:409});
         result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:e.customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:e.paymentMethod||"CASH",occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});

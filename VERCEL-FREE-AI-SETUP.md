@@ -28,3 +28,14 @@ The free Vercel build uses the browser microphone and browser speech recognition
 ## Switching later
 
 The AI provider is isolated. When funding is available, a future deployment can switch the provider to a paid model without changing the accounting engine.
+
+
+## Voice accuracy update
+
+Hosted free mode records microphone audio and sends the short clip to Gemini for transcription instead of using browser SpeechRecognition. Set:
+
+```env
+GEMINI_TRANSCRIBE_MODEL=gemini-3.5-transcribe
+```
+
+The transcription route also supplies tenant-specific customer/product vocabulary and supports explicit Indian-language hints. Keep recordings short (under 4 MB).

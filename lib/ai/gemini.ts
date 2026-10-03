@@ -5,7 +5,7 @@ function key() {
 }
 
 function model() {
-  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  return process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 }
 
 export function isGeminiEnabled() {
@@ -29,7 +29,7 @@ export async function geminiJson(messages: GeminiMessage[], timeoutMs = 45000): 
         body: JSON.stringify({
           contents,
           generationConfig: {
-            temperature: 0.1,
+            temperature: 0.0,
             responseMimeType: "application/json",
           },
         }),
