@@ -14,6 +14,11 @@ export default function AskHisab(){
 
  async function speak(answer:string){
    if(!voiceEnabled||!answer.trim()) return;
+   const localMode=process.env.NEXT_PUBLIC_AI_PROVIDER==='ollama'||process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini';
+   if(localMode){
+     if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}
+     return;
+   }
    try{setSpeaking(true);const r=await fetch('/api/voice/speak',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:answer,language})});if(!r.ok)throw new Error();const blob=await r.blob();const url=URL.createObjectURL(blob);audioRef.current=new Audio(url);audioRef.current.onended=()=>{setSpeaking(false);URL.revokeObjectURL(url)};await audioRef.current.play();}
    catch{if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}else setSpeaking(false)}
  }
@@ -21,6 +26,7 @@ export default function AskHisab(){
  async function send(value=text){if(!value.trim()||busy)return;const clean=value.trim();setText("");setMsgs(m=>[...m,{role:"user",text:clean}]);setBusy(true);try{const r=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:clean,conversationId:'main'})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Something went wrong.');const answer=d.result.response||'I understood the request.';setMsgs(m=>[...m,{role:'assistant',text:answer}]);if(d.result.requiresConfirmation||d.result.risk!=='LOW')setPending({actionId:d.actionId,result:d.result});else if(d.result.intent!=='UNKNOWN')setPending({actionId:d.actionId,result:d.result,auto:true});await speak(answer);}catch(e:any){setMsgs(m=>[...m,{role:'assistant',text:e.message||'Something went wrong.'}])}finally{setBusy(false)}}
  async function execute(confirmed=true){if(!pending)return;setBusy(true);try{const r=await fetch('/api/ai/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({actionId:pending.actionId,confirmed})});const d=await r.json();if(!r.ok){setMsgs(m=>[...m,{role:'assistant',text:d.error||'The action could not be executed.'}]);if(d.matches)setPending({...pending,matches:d.matches});return}const answer=d.result?.message||'Done. The live business records have been updated.';setMsgs(m=>[...m,{role:'assistant',text:answer}]);setPending(null);await speak(answer)}finally{setBusy(false)}}
  async function startLiveVoice(){
+   if(process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini'){setMsgs(m=>[...m,{role:"assistant",text:"Free hosted mode uses the regular microphone button. It keeps audio out of our server and sends only the recognized text to Hisab Flow."}]);return;}
    if(livePcRef.current){livePcRef.current.close();livePcRef.current=null;liveDcRef.current=null;liveStreamRef.current?.getTracks().forEach(t=>t.stop());liveStreamRef.current=null;setListening(false);return;}
    if(!navigator.mediaDevices?.getUserMedia||!window.RTCPeerConnection){setMsgs(m=>[...m,{role:"assistant",text:"Live voice is not available in this browser. Use the regular microphone button instead."}]);return;}
    try{
@@ -39,12 +45,19 @@ export default function AskHisab(){
      pc.onconnectionstatechange=()=>{if(["failed","closed","disconnected"].includes(pc.connectionState)){setListening(false);setBusy(false)}};
      const offer=await pc.createOffer();await pc.setLocalDescription(offer);await new Promise<void>(resolve=>{if(pc.iceGatheringState==="complete")return resolve();const f=()=>{if(pc.iceGatheringState==="complete"){pc.removeEventListener('icegatheringstatechange',f);resolve()}};pc.addEventListener('icegatheringstatechange',f)});
      const resp=await fetch('/api/voice/realtime',{method:'POST',headers:{'Content-Type':'application/sdp','x-hisab-language':language},body:pc.localDescription?.sdp||''});if(!resp.ok)throw new Error(await resp.text());const answer=await resp.text();await pc.setRemoteDescription({type:'answer',sdp:answer});
-   }catch(e:any){livePcRef.current?.close();livePcRef.current=null;liveDcRef.current=null;liveStreamRef.current?.getTracks().forEach(t=>t.stop());liveStreamRef.current=null;setListening(false);setMsgs(m=>[...m,{role:'assistant',text:e.message||'Could not start live voice. Check OPENAI_API_KEY and microphone permission.'}]);}
+   }catch(e:any){livePcRef.current?.close();livePcRef.current=null;liveDcRef.current=null;liveStreamRef.current?.getTracks().forEach(t=>t.stop());liveStreamRef.current=null;setListening(false);setMsgs(m=>[...m,{role:'assistant',text:e.message||'Live voice needs a cloud voice provider. In free local mode, use the regular microphone button instead.'}]);}
    finally{setBusy(false)}
  }
  async function startVoice(){
    if(listening){recRef.current?.stop();mediaRef.current?.stop();setListening(false);return}
-   // Preferred path: capture real audio and send it to server-side transcription. This handles multilingual/code-mixed speech better than fixed browser locales.
+   const localMode=process.env.NEXT_PUBLIC_AI_PROVIDER==='ollama'||process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini';
+   // Free browser voice mode: use the browser's built-in speech recognition and never upload audio to an AI API.
+   if(localMode){
+     const SR=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;
+     if(!SR){setMsgs(m=>[...m,{role:"assistant",text:'Browser speech recognition is unavailable. You can still type naturally.'}]);return}
+     const r=new SR();recRef.current=r;r.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':language==='Kannada'?'kn-IN':language==='Malayalam'?'ml-IN':language==='Marathi'?'mr-IN':language==='Bengali'?'bn-IN':language==='Gujarati'?'gu-IN':'en-IN';r.interimResults=true;r.continuous=false;r.onstart=()=>setListening(true);r.onend=()=>setListening(false);r.onerror=()=>setListening(false);r.onresult=(e:any)=>{let final="";for(let i=0;i<e.results.length;i++)final+=e.results[i][0].transcript;setText(final)};r.start();return;
+   }
+   // Cloud mode: capture real audio and send it to server-side transcription.
    if(typeof MediaRecorder!=="undefined"&&navigator.mediaDevices?.getUserMedia&&process.env.NEXT_PUBLIC_VOICE_CAPTURE!=="off"){
     try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});const mr=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':undefined});chunksRef.current=[];mr.ondataavailable=e=>e.data.size&&chunksRef.current.push(e.data);mr.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());const blob=new Blob(chunksRef.current,{type:mr.mimeType||'audio/webm'});const fd=new FormData();fd.append('file',blob,'voice.webm');fd.append('language',language==='Auto'?'':language.toLowerCase());setBusy(true);try{const r=await fetch('/api/voice/transcribe',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw new Error(d.error||'Voice transcription failed.');setText(d.text||'');if(d.text)await send(d.text)}catch(e:any){setMsgs(m=>[...m,{role:'assistant',text:e.message||'Voice transcription failed. You can still type.'}])}finally{setBusy(false)}};mr.start();mediaRef.current=mr;setListening(true);return}catch{/* fall through */}}
  const SR=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;if(!SR){setMsgs(m=>[...m,{role:'assistant',text:'Voice capture is unavailable in this browser. Please allow microphone access or type naturally.'}]);return}const r=new SR();recRef.current=r;r.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';r.interimResults=true;r.continuous=false;r.onstart=()=>setListening(true);r.onend=()=>setListening(false);r.onerror=()=>setListening(false);r.onresult=(e:any)=>{let final="";for(let i=0;i<e.results.length;i++)final+=e.results[i][0].transcript;setText(final)};r.start();

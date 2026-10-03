@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { isLocalAIEnabled, ollamaJson } from "./ollama";
+import { geminiJson, isGeminiEnabled } from "./gemini";
 import { z } from "zod";
 import { db } from "../db";
 import { normalize } from "../utils";
@@ -31,11 +33,19 @@ async function resolveProduct(businessId:string, query:string){
 
 export async function interpret(businessId:string,text:string,context?:{customerId?:string|null;productId?:string|null;lastIntent?:string|null}):Promise<Interpretation>{
   const memories=await db.businessMemory.findMany({where:{businessId,active:true},take:30});
-  if(process.env.OPENAI_API_KEY){
+  if(isLocalAIEnabled() || isGeminiEnabled() || process.env.OPENAI_API_KEY){
     try {
-      const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY});
-      const response=await client.responses.create({model:(process.env.OPENAI_TEXT_MODEL||process.env.OPENAI_MODEL||"gpt-5.6-luna"),input:[{role:"system",content:`You are Hisab Flow's interpretation engine. Never execute actions. Return JSON only matching the requested schema. Understand Indian English, Hindi, Tamil, Hinglish, Tanglish and code-mixed business speech. Map natural language to intents such as RECEIVE_PAYMENT, CREATE_SALE, CREATE_EXPENSE, CUSTOMER_BALANCE, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, SEARCH_CUSTOMERS. Resolve ambiguity conservatively. Business memory: ${JSON.stringify(memories.map(m=>({key:m.key,value:m.value})))} Context: ${JSON.stringify(context||{})}. Treat pronouns like he/him/that customer/that product as references to the supplied context. Never invent an entity ID. If multiple candidates remain plausible, return the candidates and require clarification.`},{role:"user",content:text}],text:{format:{type:"json_schema",name:"hisabflow_interpretation",strict:true,schema:{type:"object",properties:{intent:{type:"string"},entities:{type:"object",additionalProperties:true},confidence:{type:"object",additionalProperties:{type:"number"}},risk:{type:"string",enum:["LOW","MEDIUM","HIGH"]},response:{type:"string"},requiresConfirmation:{type:"boolean"}},required:["intent","entities","confidence","risk","response","requiresConfirmation"],additionalProperties:false}}}} as any);
-      const parsed:any=JSON.parse(response.output_text);
+      const systemPrompt=`You are Hisab Flow's interpretation engine. Never execute actions. Return JSON only. Understand Indian English, Hindi, Tamil, Hinglish, Tanglish and code-mixed business speech. Map natural language to intents such as RECEIVE_PAYMENT, CREATE_SALE, CREATE_EXPENSE, CUSTOMER_BALANCE, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, SEARCH_CUSTOMERS. Resolve ambiguity conservatively. Business memory: ${JSON.stringify(memories.map(m=>({key:m.key,value:m.value})))} Context: ${JSON.stringify(context||{})}. Treat pronouns like he/him/that customer/that product as references to the supplied context. Never invent an entity ID. If multiple candidates remain plausible, return the candidates and require clarification. Return this JSON shape: {"intent":"string","entities":{},"confidence":{},"risk":"LOW|MEDIUM|HIGH","response":"string","requiresConfirmation":false}.`;
+      let parsed:any;
+      if(isLocalAIEnabled()) {
+        parsed=await ollamaJson([{role:"system",content:systemPrompt},{role:"user",content:text}]);
+      } else if(isGeminiEnabled()) {
+        parsed=await geminiJson([{role:"user",content:`${systemPrompt}\n\nUser request: ${text}`}]);
+      } else {
+        const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY});
+        const response=await client.responses.create({model:(process.env.OPENAI_TEXT_MODEL||process.env.OPENAI_MODEL||"gpt-5.6-luna"),input:[{role:"system",content:systemPrompt},{role:"user",content:text}],text:{format:{type:"json_schema",name:"hisabflow_interpretation",strict:true,schema:{type:"object",properties:{intent:{type:"string"},entities:{type:"object",additionalProperties:true},confidence:{type:"object",additionalProperties:{type:"number"}},risk:{type:"string",enum:["LOW","MEDIUM","HIGH"]},response:{type:"string"},requiresConfirmation:{type:"boolean"}},required:["intent","entities","confidence","risk","response","requiresConfirmation"],additionalProperties:false}}}} as any);
+        parsed=JSON.parse(response.output_text);
+      }
       // Resolve human names to tenant-scoped IDs after the model interprets the sentence.
       if(parsed.entities?.customerName && !parsed.entities.customerId){const r=await resolveCustomer(businessId,String(parsed.entities.customerName));parsed.entities.matches=r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}));if(r.selected){parsed.entities.customerId=r.selected.id;parsed.entities.customerName=r.selected.name}}
       if(parsed.entities?.productName && !parsed.entities.productId){const r=await resolveProduct(businessId,String(parsed.entities.productName));parsed.entities.productMatches=r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock)}));if(r.selected){parsed.entities.productId=r.selected.id;parsed.entities.productName=r.selected.name}}
