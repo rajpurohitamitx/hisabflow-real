@@ -21,93 +21,48 @@ CREATE TYPE "IntegrationStatus" AS ENUM ('CONNECTED', 'DISCONNECTED', 'ERROR');
 CREATE TYPE "ImportStatus" AS ENUM ('QUEUED', 'PROCESSING', 'REVIEW_REQUIRED', 'COMPLETED', 'FAILED');
 
 CREATE TABLE "User" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "name" TEXT NOT NULL,
   "email" TEXT NOT NULL,
   "passwordHash" TEXT NOT NULL,
   "phone" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "memberships" "Membership" NOT NULL,
-  "auditLogs" "AuditLog" NOT NULL,
-  "aiActions" "AIAction" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Business" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "name" TEXT NOT NULL,
   "businessType" TEXT NOT NULL DEFAULT 'general',
   "currency" TEXT NOT NULL DEFAULT 'INR',
   "timezone" TEXT NOT NULL DEFAULT 'Asia/Kolkata',
   "gstEnabled" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "memberships" "Membership" NOT NULL,
-  "branches" "Branch" NOT NULL,
-  "customers" "Customer" NOT NULL,
-  "suppliers" "Supplier" NOT NULL,
-  "products" "Product" NOT NULL,
-  "sales" "Sale" NOT NULL,
-  "purchases" "Purchase" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "expenses" "Expense" NOT NULL,
-  "reminders" "Reminder" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL,
-  "inventoryMoves" "InventoryMovement" NOT NULL,
-  "aiActions" "AIAction" NOT NULL,
-  "auditLogs" "AuditLog" NOT NULL,
-  "memories" "BusinessMemory" NOT NULL,
-  "aliases" "Alias" NOT NULL,
-  "conversations" "Conversation" NOT NULL,
-  "industryConfig" "IndustryConfig",
-  "automations" "Automation" NOT NULL,
-  "documents" "Document" NOT NULL,
-  "notifications" "Notification" NOT NULL,
-  "quotes" "Quote" NOT NULL,
-  "returns" "SaleReturn" NOT NULL,
-  "batches" "StockBatch" NOT NULL,
-  "serials" "StockSerial" NOT NULL,
-  "approvals" "ApprovalRequest" NOT NULL,
-  "integrations" "IntegrationConnection" NOT NULL,
-  "imports" "ImportJob" NOT NULL,
-  "cashSessions" "CashSession" NOT NULL,
-  "recurring" "RecurringTransaction" NOT NULL,
-  "paymentLinks" "PaymentLink" NOT NULL,
-  "aiInsights" "AIInsight" NOT NULL,
-  "entityEvents" "EntityResolutionEvent" NOT NULL,
-  "workflowRuns" "WorkflowRun" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Membership" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "userId" TEXT NOT NULL,
   "businessId" TEXT NOT NULL,
   "role" "MembershipRole" NOT NULL DEFAULT 'OWNER',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Branch" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
   "code" TEXT,
   "address" TEXT,
   "isMain" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "warehouses" "Warehouse" NOT NULL,
-  "sales" "Sale" NOT NULL,
-  "purchases" "Purchase" NOT NULL,
-  "expenses" "Expense" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "customers" "Customer" NOT NULL,
-  "products" "Product" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Warehouse" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "branchId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "products" "Product" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Customer" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "name" TEXT NOT NULL,
@@ -118,20 +73,11 @@ CREATE TABLE "Customer" (
   "creditLimit" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "notes" TEXT,
   "archived" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "aliases" "Alias" NOT NULL,
-  "quotes" "Quote" NOT NULL,
-  "returns" "SaleReturn" NOT NULL,
-  "paymentLinks" "PaymentLink" NOT NULL,
-  "sales" "Sale" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL,
-  "reminders" "Reminder" NOT NULL,
-  "conversations" "Conversation" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Supplier" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
   "phone" TEXT,
@@ -140,15 +86,11 @@ CREATE TABLE "Supplier" (
   "gstin" TEXT,
   "notes" TEXT,
   "archived" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "aliases" "Alias" NOT NULL,
-  "purchases" "Purchase" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Product" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "warehouseId" TEXT,
@@ -167,19 +109,11 @@ CREATE TABLE "Product" (
   "serialTracking" BOOLEAN NOT NULL DEFAULT FALSE,
   "metadata" JSONB,
   "archived" BOOLEAN NOT NULL DEFAULT FALSE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "aliases" "Alias" NOT NULL,
-  "saleItems" "SaleItem" NOT NULL,
-  "purchaseItems" "PurchaseItem" NOT NULL,
-  "inventoryMoves" "InventoryMovement" NOT NULL,
-  "batches" "StockBatch" NOT NULL,
-  "serials" "StockSerial" NOT NULL,
-  "quoteItems" "QuoteItem" NOT NULL,
-  "returnItems" "SaleReturnItem" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Sale" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "customerId" TEXT,
@@ -192,19 +126,13 @@ CREATE TABLE "Sale" (
   "amountPaid" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "balanceDue" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "notes" TEXT,
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "source" TEXT NOT NULL DEFAULT 'manual',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "items" "SaleItem" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL,
-  "inventoryMoves" "InventoryMovement" NOT NULL,
-  "allocations" "PaymentAllocation" NOT NULL,
-  "returns" "SaleReturn" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "SaleItem" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "saleId" TEXT NOT NULL,
   "productId" TEXT NOT NULL,
   "nameSnapshot" TEXT NOT NULL,
@@ -213,7 +141,7 @@ CREATE TABLE "SaleItem" (
   "lineTotal" DECIMAL(18,2) NOT NULL
 );
 CREATE TABLE "Purchase" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "supplierId" TEXT,
@@ -224,17 +152,13 @@ CREATE TABLE "Purchase" (
   "total" DECIMAL(18,2) NOT NULL,
   "amountPaid" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "balanceDue" DECIMAL(18,2) NOT NULL DEFAULT 0,
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "source" TEXT NOT NULL DEFAULT 'manual',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "items" "PurchaseItem" NOT NULL,
-  "payments" "Payment" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL,
-  "inventoryMoves" "InventoryMovement" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "PurchaseItem" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "purchaseId" TEXT NOT NULL,
   "productId" TEXT NOT NULL,
   "nameSnapshot" TEXT NOT NULL,
@@ -243,7 +167,7 @@ CREATE TABLE "PurchaseItem" (
   "lineTotal" DECIMAL(18,2) NOT NULL
 );
 CREATE TABLE "Payment" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "customerId" TEXT,
@@ -254,33 +178,30 @@ CREATE TABLE "Payment" (
   "method" "PaymentMethod" NOT NULL DEFAULT 'CASH',
   "kind" "PaymentKind" NOT NULL DEFAULT 'CUSTOMER_RECEIPT',
   "notes" TEXT,
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "source" TEXT NOT NULL DEFAULT 'manual',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "allocations" "PaymentAllocation" NOT NULL,
-  "ledgerEntries" "LedgerEntry" NOT NULL,
-  "paymentLinks" "PaymentLink" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "PaymentAllocation" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "paymentId" TEXT NOT NULL,
   "saleId" TEXT NOT NULL,
   "amount" DECIMAL(18,2) NOT NULL
 );
 CREATE TABLE "Expense" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "category" TEXT NOT NULL,
   "amount" DECIMAL(18,2) NOT NULL,
   "description" TEXT,
   "paymentMethod" "PaymentMethod" NOT NULL DEFAULT 'CASH',
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "source" TEXT NOT NULL DEFAULT 'manual',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "LedgerEntry" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "supplierId" TEXT,
@@ -291,10 +212,10 @@ CREATE TABLE "LedgerEntry" (
   "debit" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "credit" DECIMAL(18,2) NOT NULL DEFAULT 0,
   "description" TEXT NOT NULL,
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "InventoryMovement" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "branchId" TEXT,
   "productId" TEXT NOT NULL,
@@ -307,10 +228,10 @@ CREATE TABLE "InventoryMovement" (
   "referenceType" TEXT,
   "referenceId" TEXT,
   "note" TEXT,
-  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Reminder" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "title" TEXT NOT NULL,
@@ -318,31 +239,31 @@ CREATE TABLE "Reminder" (
   "channel" TEXT NOT NULL DEFAULT 'in_app',
   "notes" TEXT,
   "status" "ReminderStatus" NOT NULL DEFAULT 'PENDING',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "BusinessMemory" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "scope" "MemoryScope" NOT NULL DEFAULT 'BUSINESS',
   "key" TEXT NOT NULL,
   "value" JSONB NOT NULL,
   "source" TEXT NOT NULL DEFAULT 'user',
   "active" BOOLEAN NOT NULL DEFAULT TRUE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Alias" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "supplierId" TEXT,
   "productId" TEXT,
   "value" TEXT NOT NULL,
   "normalized" TEXT NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "IndustryConfig" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "industry" TEXT NOT NULL,
   "fields" JSONB NOT NULL,
@@ -350,29 +271,28 @@ CREATE TABLE "IndustryConfig" (
   "vocabulary" JSONB NOT NULL,
   "workflows" JSONB NOT NULL,
   "templates" JSONB NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Conversation" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "key" TEXT NOT NULL,
   "customerId" TEXT,
   "productId" TEXT,
   "lastIntent" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "messages" "ConversationMessage" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "ConversationMessage" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "conversationId" TEXT NOT NULL,
   "role" TEXT NOT NULL,
   "text" TEXT NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "AIAction" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "userId" TEXT,
   "input" TEXT NOT NULL,
@@ -382,10 +302,10 @@ CREATE TABLE "AIAction" (
   "risk" "AIRisk" NOT NULL,
   "status" "AIActionStatus" NOT NULL DEFAULT 'INTERPRETED',
   "result" JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "AuditLog" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "userId" TEXT,
   "actorType" "AuditActor" NOT NULL DEFAULT 'USER',
@@ -395,39 +315,39 @@ CREATE TABLE "AuditLog" (
   "before" JSONB,
   "after" JSONB,
   "metadata" JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Automation" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
   "trigger" TEXT NOT NULL,
   "config" JSONB NOT NULL,
   "enabled" BOOLEAN NOT NULL DEFAULT TRUE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "Document" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "fileName" TEXT NOT NULL,
   "storageKey" TEXT,
   "mimeType" TEXT NOT NULL,
   "status" "DocumentStatus" NOT NULL DEFAULT 'UPLOADED',
   "extraction" JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Notification" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "title" TEXT NOT NULL,
   "body" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
   "readAt" TIMESTAMP(3),
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "Quote" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "number" TEXT NOT NULL,
@@ -438,12 +358,11 @@ CREATE TABLE "Quote" (
   "total" DECIMAL(18,2) NOT NULL,
   "validUntil" TIMESTAMP(3),
   "notes" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "updatedAt" TIMESTAMP(3) NOT NULL,
-  "items" "QuoteItem" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "QuoteItem" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "quoteId" TEXT NOT NULL,
   "productId" TEXT,
   "nameSnapshot" TEXT NOT NULL,
@@ -452,7 +371,7 @@ CREATE TABLE "QuoteItem" (
   "lineTotal" DECIMAL(18,2) NOT NULL
 );
 CREATE TABLE "SaleReturn" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "saleId" TEXT,
@@ -460,11 +379,10 @@ CREATE TABLE "SaleReturn" (
   "status" "ReturnStatus" NOT NULL DEFAULT 'CONFIRMED',
   "total" DECIMAL(18,2) NOT NULL,
   "reason" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
-  "items" "SaleReturnItem" NOT NULL
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "SaleReturnItem" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "returnId" TEXT NOT NULL,
   "productId" TEXT NOT NULL,
   "quantity" DECIMAL(18,3) NOT NULL,
@@ -472,25 +390,25 @@ CREATE TABLE "SaleReturnItem" (
   "lineTotal" DECIMAL(18,2) NOT NULL
 );
 CREATE TABLE "StockBatch" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "productId" TEXT NOT NULL,
   "batchNumber" TEXT NOT NULL,
   "quantity" DECIMAL(18,3) NOT NULL,
   "expiryAt" TIMESTAMP(3),
   "cost" DECIMAL(18,2) NOT NULL DEFAULT 0,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "StockSerial" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "productId" TEXT NOT NULL,
   "serial" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'IN_STOCK',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "ApprovalRequest" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "requestedBy" TEXT,
   "type" TEXT NOT NULL,
@@ -498,21 +416,21 @@ CREATE TABLE "ApprovalRequest" (
   "payload" JSONB NOT NULL,
   "status" "ApprovalStatus" NOT NULL DEFAULT 'PENDING',
   "reviewedBy" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "reviewedAt" TIMESTAMP(3)
 );
 CREATE TABLE "IntegrationConnection" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "provider" TEXT NOT NULL,
   "status" "IntegrationStatus" NOT NULL DEFAULT 'DISCONNECTED',
   "config" JSONB NOT NULL,
   "lastError" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "ImportJob" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "source" TEXT NOT NULL,
   "fileName" TEXT,
@@ -520,14 +438,14 @@ CREATE TABLE "ImportJob" (
   "mapping" JSONB,
   "stats" JSONB,
   "errors" JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "CashSession" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "openedBy" TEXT,
-  "openedAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "openedAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "closedAt" TIMESTAMP(3),
   "openingCash" DECIMAL(18,2) NOT NULL,
   "closingCash" DECIMAL(18,2),
@@ -535,7 +453,7 @@ CREATE TABLE "CashSession" (
   "notes" TEXT
 );
 CREATE TABLE "RecurringTransaction" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "name" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
@@ -544,11 +462,11 @@ CREATE TABLE "RecurringTransaction" (
   "nextRunAt" TIMESTAMP(3) NOT NULL,
   "config" JSONB,
   "enabled" BOOLEAN NOT NULL DEFAULT TRUE,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 CREATE TABLE "PaymentLink" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "customerId" TEXT,
   "paymentId" TEXT,
@@ -557,10 +475,10 @@ CREATE TABLE "PaymentLink" (
   "externalId" TEXT,
   "status" TEXT NOT NULL DEFAULT 'PENDING',
   "url" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "AIInsight" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
   "priority" TEXT NOT NULL DEFAULT 'MEDIUM',
@@ -568,11 +486,11 @@ CREATE TABLE "AIInsight" (
   "message" TEXT NOT NULL,
   "data" JSONB,
   "status" TEXT NOT NULL DEFAULT 'OPEN',
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "resolvedAt" TIMESTAMP(3)
 );
 CREATE TABLE "EntityResolutionEvent" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
   "query" TEXT NOT NULL,
@@ -580,16 +498,16 @@ CREATE TABLE "EntityResolutionEvent" (
   "confidence" DOUBLE PRECISION NOT NULL,
   "candidates" JSONB,
   "outcome" TEXT NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 CREATE TABLE "WorkflowRun" (
-  "id" TEXT PRIMARY KEY DEFAULT cuid(,
+  "id" TEXT PRIMARY KEY,
   "businessId" TEXT NOT NULL,
   "workflow" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'READY',
   "input" JSONB,
   "result" JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMP(3) NOT NULL
 );
 
