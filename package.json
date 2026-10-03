@@ -20,7 +20,8 @@
     "ci": "npm run test:architecture && npm run check && npm run build",
     "test:e2e": "playwright test",
     "test:db": "tsx scripts/smoke-db.ts",
-    "test:openai": "node scripts/smoke-openai.mjs"
+    "test:openai": "node scripts/smoke-openai.mjs",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
@@ -47,5 +48,11 @@
   },
   "engines": {
     "node": ">=22.16.0 <25.0.0"
+  },
+  "allowScripts": {
+    "@prisma/client": true,
+    "prisma": true,
+    "@prisma/engines": true,
+    "esbuild": true
   }
 }
