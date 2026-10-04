@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { interpret } from "@/lib/ai/interpret";
+import { Prisma } from "@prisma/client";
 
 const AFFIRM=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/iu;
 const NEG=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના|leave)$/iu;
@@ -14,8 +15,8 @@ export async function POST(req:Request){
     const conversationId=String(body.conversationId||"main");
     if(!text) return NextResponse.json({error:"Tell Hisab Flow what you need."},{status:400});
 
-    let conversation=await db.conversation.findUnique({where:{businessId_key:{businessId:s.businessId,key:conversationId}},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
-    if(!conversation) conversation=await db.conversation.create({data:{businessId:s.businessId,key:conversationId}});
+    const existingConversation=await db.conversation.findUnique({where:{businessId_key:{businessId:s.businessId,key:conversationId}},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
+    const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId}});
 
     const pending:any=conversation.pendingAction||null;
     // Confirmation/cancellation is handled against the persisted action, not reinterpreted.
@@ -28,7 +29,7 @@ export async function POST(req:Request){
       }
     }
     if(pending?.actionId && NEG.test(text)){
-      await db.conversation.update({where:{id:conversation.id},data:{pendingAction:null,lastIntent:"CANCELLED"}});
+      await db.conversation.update({where:{id:conversation.id},data:{pendingAction:Prisma.DbNull,lastIntent:"CANCELLED"}});
       await db.conversationMessage.createMany({data:[{conversationId:conversation.id,role:"user",text},{conversationId:conversation.id,role:"assistant",text:"Okay, I won’t make that change."}]});
       return NextResponse.json({actionId:pending.actionId,conversationId,result:{intent:"UNKNOWN",entities:{cancelled:true},confidence:{intent:1},risk:"LOW",response:"Okay, I won’t make that change.",requiresConfirmation:false,needsClarification:false},cancelled:true});
     }
