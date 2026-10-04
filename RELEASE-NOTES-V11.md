@@ -14,3 +14,12 @@ V11 is the conversational architecture release. The user interacts through Ask H
 
 ## Safety
 Financial mutations remain confirmation-gated. The AI never directly writes accounting records; `/api/ai/execute` validates and performs the transaction.
+
+## Final Universal Hardening (V12-final)
+- Added universal pending-action field patching so follow-up messages update the existing action instead of restarting it.
+- Pending context is no longer discarded merely because a clarification sentence is longer than six words.
+- Reminder date/time parsing understands today/tomorrow and explicit day/month plus 12h/24h times in the business-facing India timezone.
+- Reminder creation now uses the normalized pending title/dueAt fields instead of inventing a default next-Monday reminder.
+- Confirmation UI renders nested fields such as reminder title and due time instead of `[object Object]`.
+- Existing explicit customer/product identity rules remain authoritative; stale IDs are not allowed to silently override a newly named entity.
+- `yes/confirm/go ahead` continues to execute the exact currently pending action once.
