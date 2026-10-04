@@ -16,8 +16,18 @@ export default function AskHisab(){
  useEffect(()=>{
    const Recognition=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;
    if(!Recognition) return;
-   let stopped=false;
-   const startWake=()=>{
+   let stopped=false; let permissionReady=false;
+   const requestMicPermission=async()=>{
+     try{
+       if(navigator.mediaDevices?.getUserMedia){
+         const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+         stream.getTracks().forEach(t=>t.stop());
+         permissionReady=true;
+       }
+     }catch{}
+   };
+   const startAfterPermission=async()=>{await requestMicPermission(); if(!stopped) startWake();};
+   function startWake(){
      if(stopped||wakeRef.current||mediaRef.current||livePcRef.current||speakingRef.current||busyRef.current) return;
      try{
        const r=new Recognition(); wakeRef.current=r; r.continuous=true; r.interimResults=true; r.lang="en-IN";
@@ -37,8 +47,8 @@ export default function AskHisab(){
        r.start();
      }catch{wakeRef.current=null; if(!stopped)setTimeout(startWake,1200)}
    };
-   startWake();
-   const timer=setInterval(startWake,1500);
+   startAfterPermission();
+   const timer=setInterval(()=>{if(permissionReady||navigator.permissions===undefined) startWake();},1500);
    return()=>{stopped=true;clearInterval(timer);try{wakeRef.current?.stop()}catch{}wakeRef.current=null;};
  },[]);
  useEffect(()=>()=>{try{wakeRef.current?.stop()}catch{} recRef.current?.stop();mediaRef.current?.stop();if(autoListenTimerRef.current)clearTimeout(autoListenTimerRef.current);if(silenceTimerRef.current)clearTimeout(silenceTimerRef.current);audioContextRef.current?.close();audioRef.current?.pause();livePcRef.current?.close();liveStreamRef.current?.getTracks().forEach(t=>t.stop())},[]);
@@ -61,9 +71,23 @@ export default function AskHisab(){
    if(!value.trim()||busy)return;
    const clean=value.trim();
    const yes=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/i.test(clean);
+   // A confirmation is an answer to the current pending action, never a new AI command.
+   // Execute the ORIGINAL action exactly once; do not send "yes" back through the
+   // interpreter, which was the source of repeated confirmation loops.
    if(yes && pending && !pending.auto && pending.actionId){
      setText(""); setMsgs(m=>[...m,{role:"user",text:clean}]);
-     await execute(true);
+     const actionToExecute=pending;
+     setPending(null);
+     setBusy(true);
+     try{
+       const er=await fetch('/api/ai/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({actionId:actionToExecute.actionId,confirmed:true})});
+       const ed=await er.json();
+       if(!er.ok) throw new Error(ed.error||'The action could not be executed.');
+       const done=ed.result?.message||'Done. The requested change has been recorded.';
+       setMsgs(m=>[...m,{role:'assistant',text:done}]);
+       await speak(done);
+     }catch(e:any){ setMsgs(m=>[...m,{role:'assistant',text:e.message||'I could not complete that action.'}]); }
+     finally{setBusy(false)}
      return;
    }
    setText("");setMsgs(m=>[...m,{role:"user",text:clean}]);setBusy(true);
@@ -163,7 +187,7 @@ export default function AskHisab(){
   <div className="card overflow-hidden shadow-[0_24px_70px_rgba(12,27,22,.08)]">
    <div className="bg-[#0a1712] px-5 py-5 text-white sm:px-7"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[.18em] text-white/45"><Sparkles size={13} className="text-[#70d8ad]"/> AI business copilot</div><div className="mt-2 text-xl font-black tracking-tight">One conversation with your business.</div></div><div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-[#9fe3c5]"><ShieldCheck size={15}/> Safe execution</div></div></div>
    <div className="min-h-[470px] space-y-4 bg-[#f8faf9] p-4 sm:p-6">{msgs.map((m,i)=><div key={i} className={`flex ${m.role==='user'?'justify-end':''}`}><div className={`max-w-[88%] rounded-[22px] px-4 py-3 text-sm leading-6 shadow-sm ${m.role==='user'?'bg-[#0c6b4d] text-white':'border border-[#e3e9e5] bg-white text-[#26372f]'}`}>{m.text}</div></div>)}{busy&&<div className="flex items-center gap-2 text-xs text-[#819088]"><LoaderCircle className="animate-spin" size={15}/> Understanding your business…</div>}
-    {pending&&!pending.auto&&<div className="rounded-[22px] border border-[#cfe6da] bg-[#eff8f3] p-4"><div className="flex items-center justify-between"><div className="font-black">{pending.result?.needsClarification?'I need one quick answer':'Review before I do it'}</div><span className="badge badge-amber">{pending.result?.needsClarification?'Listening for your answer':'Confirmation'}</span></div><div className="mt-3 text-sm leading-6 text-[#52625a]">{pending.result?.response}</div><div className="mt-3 grid gap-2 text-sm">{Object.entries(pending.result.entities||{}).filter(([k,v])=>v!==null&&v!==''&&!['matches','text'].includes(k)).map(([k,v])=><div key={k} className="flex justify-between gap-4 rounded-xl bg-white/70 px-3 py-2"><span className="text-[#718078]">{k}</span><b className="text-right">{String(v)}</b></div>)}</div>{pending.matches?.length>0&&<div className="mt-3 rounded-xl bg-white p-3 text-sm"><div className="font-bold">Choose the matching customer</div>{pending.matches.map((x:any)=><button key={x.id} onClick={()=>setPending({...pending,result:{...pending.result,entities:{...pending.result.entities,customerId:x.id,customerName:x.name}}})} className="mt-2 block w-full rounded-xl border border-[#e3e9e5] p-3 text-left hover:bg-[#f5f7f5]">{x.name} <span className="text-xs text-[#89968f]">{x.phone||''}</span></button>)}</div>}<div className="mt-4 flex flex-wrap gap-2">{pending.result?.entities?.customerResolution==='CREATE_OR_CONFIRM'&&<button className="btn btn-soft" onClick={()=>{setPending({...pending,result:{...pending.result,entities:{...pending.result.entities,createCustomer:true},needsClarification:false,response:`Add ${pending.result.entities.proposedCustomerName} and record this payment?`}})}} disabled={busy}>Add customer</button>}<button className="btn btn-primary" onClick={()=>execute(true)} disabled={busy}><Check size={15}/> Confirm</button><button className="btn btn-ghost" onClick={()=>setPending(null)}><Edit3 size={15}/> Cancel</button></div></div>}
+    {pending&&!pending.auto&&<div className="rounded-[22px] border border-[#cfe6da] bg-[#eff8f3] p-4"><div className="flex items-center justify-between"><div className="font-black">{pending.result?.needsClarification?'I need one quick answer':'Review before I do it'}</div><span className="badge badge-amber">{pending.result?.needsClarification?'Listening for your answer':'Confirmation'}</span></div><div className="mt-3 text-sm leading-6 text-[#52625a]">{pending.result?.response}</div><div className="mt-3 grid gap-2 text-sm">{Object.entries(pending.result.entities||{}).filter(([k,v])=>v!==null&&v!==''&&!['matches','text'].includes(k)).map(([k,v])=><div key={k} className="flex justify-between gap-4 rounded-xl bg-white/70 px-3 py-2"><span className="text-[#718078]">{k}</span><b className="text-right">{String(v)}</b></div>)}</div>{pending.matches?.length>0&&<div className="mt-3 rounded-xl bg-white p-3 text-sm"><div className="font-bold">Choose the matching customer</div>{pending.matches.map((x:any)=><button key={x.id} onClick={()=>setPending({...pending,result:{...pending.result,entities:{...pending.result.entities,customerId:x.id,customerName:x.name}}})} className="mt-2 block w-full rounded-xl border border-[#e3e9e5] p-3 text-left hover:bg-[#f5f7f5]">{x.name} <span className="text-xs text-[#89968f]">{x.phone||''}</span></button>)}</div>}<div className="mt-4 flex flex-wrap gap-2">{pending.result?.entities?.customerResolution==='CREATE_OR_CONFIRM'&&<button className="btn btn-soft" onClick={()=>{setPending({...pending,result:{...pending.result,entities:{...pending.result.entities,createCustomer:true},needsClarification:false,response:`Add ${pending.result.entities.proposedCustomerName} and continue with this ${pending.result.intent==='CREATE_SALE'?'sale':pending.result.intent==='CREATE_PURCHASE'?'purchase':'action'}?`}})}} disabled={busy}>Add customer</button>}<button className="btn btn-primary" onClick={()=>execute(true)} disabled={busy}><Check size={15}/> Confirm</button><button className="btn btn-ghost" onClick={()=>setPending(null)}><Edit3 size={15}/> Cancel</button></div></div>}
     {pending?.auto&&<div className="rounded-[22px] border border-[#d8e8df] bg-[#eff8f3] p-4 text-sm"><div className="flex items-center gap-2 font-bold"><BookOpen size={15} className="text-[#0c6b4d]"/> Ready to use live data</div><button onClick={()=>execute(true)} className="mt-3 btn btn-soft">Run from live data <Check size={15}/></button></div>}
    </div>
    <div className="border-t border-[#e3e9e5] bg-white p-4 sm:p-5"><div className="mb-3 flex flex-wrap items-center gap-2"><div className="flex items-center gap-2 rounded-full bg-[#f2f6f3] px-3 py-2 text-xs text-[#52625a]"><Languages size={14}/><select value={language} onChange={e=>setLanguage(e.target.value)} className="bg-transparent font-semibold outline-none">{languages.map(x=><option key={x}>{x}</option>)}</select></div><button onClick={()=>setVoiceEnabled(!voiceEnabled)} className="btn btn-ghost !rounded-full !px-3 !py-2 text-xs">{voiceEnabled?<Volume2 size={14}/>:<VolumeX size={14}/>} Voice {voiceEnabled?'on':'off'}</button>{speaking&&<button onClick={stopSpeaking} className="btn btn-ghost !rounded-full !px-3 !py-2 text-xs"><Square size={12}/> Stop</button>}</div><div className="flex items-end gap-2"><button onClick={startLiveVoice} disabled={busy} title="ChatGPT-style live voice" className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl transition ${livePcRef.current?'bg-[#ffe8e7] text-[#a42d28]':'bg-[#edf7f2] text-[#0c6b4d] hover:bg-[#dff2e9]'}`}>{livePcRef.current?<Square size={18}/>:<Radio size={19}/>}</button><button onClick={()=>startVoice()} disabled={busy||!!livePcRef.current} title="Record a voice message" className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#f3f6f4] text-[#52625a] hover:bg-[#e8efeb]">{listening&&!livePcRef.current?<Square size={18}/>:<Mic size={19}/>}</button><textarea value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}} className="field min-h-[52px] resize-none !rounded-2xl" placeholder="Say anything… in any language. I’ll understand the meaning."/><button onClick={()=>send()} disabled={busy||!text.trim()} className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#0c6b4d] text-white disabled:opacity-40"><Send size={18}/></button></div><div className="mt-2 text-[11px] text-[#91a099]">Natural speech → transcription → intent → entity matching → validation → safe business engine. No rigid sentence templates.</div></div>

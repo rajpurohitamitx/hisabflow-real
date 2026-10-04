@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -6,6 +7,31 @@ import { customerBalance, dashboardSummary } from "@/lib/services/business";
 import { money } from "@/lib/utils";
 import { geminiJson, isGeminiEnabled } from "@/lib/ai/gemini";
 
+
+async function bindCustomer(businessId:string,e:any,allowCreate:boolean){
+  let customerId=typeof e.customerId==="string"?e.customerId:undefined;
+  let customerName=String(e.customerName||e.customerQuery||e.proposedCustomerName||"").trim();
+  if(customerName){
+    const exact=await db.customer.findMany({where:{businessId,archived:false,name:{equals:customerName,mode:"insensitive"}},take:5});
+    if(exact.length>1) return {error:`I found multiple customers named ${customerName}. Please choose one before continuing.`,matches:exact.map((x:any)=>({id:x.id,name:x.name,phone:x.phone,address:x.address}))};
+    if(exact.length===1){
+      customerId=exact[0].id; customerName=exact[0].name;
+    } else if(allowCreate && e.createCustomer===true){
+      const created=await db.customer.create({data:{businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
+      customerId=created.id; customerName=created.name;
+    } else {
+      return {error:`I couldn't find ${customerName}. I won't use another customer or save this as a walk-in. Should I create ${customerName}?`,requiresCustomer:true,canCreateCustomer:true,proposedCustomerName:customerName};
+    }
+  } else if(customerId){
+    const bound=await db.customer.findFirst({where:{id:customerId,businessId,archived:false},select:{id:true,name:true,phone:true,address:true}});
+    if(!bound) return {error:"The selected customer no longer exists. Please choose the customer again.",requiresCustomer:true};
+    customerName=bound.name;
+  }
+  return {customerId,customerName};
+}
+
+function OP_SAFE_CREATE(op:string){ return op === "CREATE"; }
+
 export async function POST(req:Request){
   try{
     const s=await requireSession(); const {actionId,confirmed=false}=await req.json();
@@ -13,47 +39,87 @@ export async function POST(req:Request){
     if(action.status==="EXECUTED") return NextResponse.json({ok:true,result:action.result});
     if(action.risk!=="LOW"&&!confirmed) return NextResponse.json({error:"Confirmation required before this financial action.",requiresConfirmation:true,action},{status:409});
     const e=action.entities as any; let result:any;
+    // Resolve the customer from the action's CURRENT explicit name before every
+    // customer-sensitive operation. This blocks stale conversation IDs.
+    const allowCustomerCreate=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_REMINDER"].includes(action.intent);
+    const boundCustomer=await bindCustomer(s.businessId,e,allowCustomerCreate);
+    if((boundCustomer as any).error && ["RECEIVE_PAYMENT","CREATE_SALE","CUSTOMER_STATEMENT","CUSTOMER_BALANCE","CREATE_REMINDER","DELETE_CUSTOMER"].includes(action.intent)) return NextResponse.json(boundCustomer,{status:409});
+    if((boundCustomer as any).customerId){ e.customerId=(boundCustomer as any).customerId; e.customerName=(boundCustomer as any).customerName; }
+    if(action.intent === "MANAGE_ENTITY") {
+      const op=String(e.operation||"UPDATE").toUpperCase();
+      const type=String(e.entityType||"").toUpperCase();
+      const fields=(e.fields&&typeof e.fields==="object")?e.fields:{};
+      const name=String(e.name||e.customerName||e.productName||e.supplierName||e.query||"").trim();
+      let entityId=String(e.entityId||e.customerId||e.productId||e.supplierId||"").trim();
+      const fieldMap:any={
+        CUSTOMER:["name","phone","email","address","gstin","notes","creditLimit"],
+        PRODUCT:["name","sku","barcode","category","unit","purchasePrice","sellingPrice","reorderPoint","gstRate"],
+        SUPPLIER:["name","phone","email","address","gstin","notes"],
+        EXPENSE:["category","amount","description","paymentMethod","occurredAt"],
+        REMINDER:["title","dueAt","channel","notes","status"]
+      };
+      if(!fieldMap[type]) return NextResponse.json({error:"I understood the action, but that record type is not safely editable yet."},{status:422});
+      const allowed=fieldMap[type];
+      const data:any={};
+      for(const k of allowed) if(Object.prototype.hasOwnProperty.call(fields,k)) data[k]=fields[k];
+      const decimalFields=new Set(["creditLimit","purchasePrice","sellingPrice","reorderPoint","gstRate","amount"]);
+      for(const k of Object.keys(data)) if(decimalFields.has(k)) data[k]=new Prisma.Decimal(String(data[k]));
+      if(data.paymentMethod) data.paymentMethod=String(data.paymentMethod).toUpperCase();
+      if(data.dueAt) data.dueAt=new Date(data.dueAt);
+      if(data.occurredAt) data.occurredAt=new Date(data.occurredAt);
+      if(OP_SAFE_CREATE(op)) {
+        if(type==="CUSTOMER") { if(!data.name) data.name=name; if(!data.name) throw new Error("Customer name is required."); result=await db.customer.create({data:{businessId:s.businessId,name:String(data.name),phone:data.phone||null,email:data.email||null,address:data.address||null,gstin:data.gstin||null,notes:data.notes||null,creditLimit:data.creditLimit||new Prisma.Decimal(0)}}); }
+        else if(type==="PRODUCT") { if(!data.name) data.name=name; if(!data.name) throw new Error("Product name is required."); result=await db.product.create({data:{businessId:s.businessId,name:String(data.name),sku:data.sku||null,barcode:data.barcode||null,category:data.category||null,unit:data.unit||"piece",purchasePrice:data.purchasePrice||new Prisma.Decimal(0),sellingPrice:data.sellingPrice||new Prisma.Decimal(0),stock:data.stock?new Prisma.Decimal(String(data.stock)):new Prisma.Decimal(0),reorderPoint:data.reorderPoint||new Prisma.Decimal(0),gstRate:data.gstRate||new Prisma.Decimal(0)}}); }
+        else if(type==="SUPPLIER") { if(!data.name) data.name=name; if(!data.name) throw new Error("Supplier name is required."); result=await db.supplier.create({data:{businessId:s.businessId,name:String(data.name),phone:data.phone||null,email:data.email||null,address:data.address||null,gstin:data.gstin||null,notes:data.notes||null}}); }
+        else if(type==="EXPENSE") { if(data.amount==null||!data.category) throw new Error("Expense needs an amount and category."); result=await db.expense.create({data:{businessId:s.businessId,category:String(data.category),amount:data.amount,description:data.description||null,paymentMethod:data.paymentMethod||"CASH",occurredAt:data.occurredAt||new Date(),source:"ai"}}); }
+        else if(type==="REMINDER") { if(!data.title||!data.dueAt) throw new Error("Reminder needs a title and due date."); result=await db.reminder.create({data:{businessId:s.businessId,title:String(data.title),dueAt:data.dueAt,channel:data.channel||"in_app",notes:data.notes||null,customerId:e.customerId||null}}); }
+        result={message:`Done. ${type.toLowerCase()} created.`,record:result};
+      } else {
+        let row:any=null;
+        if(!entityId && name){
+          if(type==="CUSTOMER"){ const x=await db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{equals:name,mode:"insensitive"}},take:5}); if(x.length===1) entityId=x[0].id; else if(x.length>1) return NextResponse.json({error:`I found multiple customers named ${name}. Please specify which one.` ,matches:x.map((z:any)=>({id:z.id,name:z.name,phone:z.phone,address:z.address}))},{status:409}); }
+          if(type==="PRODUCT"){ const x=await db.product.findMany({where:{businessId:s.businessId,archived:false,name:{equals:name,mode:"insensitive"}},take:5}); if(x.length===1) entityId=x[0].id; else if(x.length>1) return NextResponse.json({error:`I found multiple products named ${name}. Please specify which one.`,matches:x.map((z:any)=>({id:z.id,name:z.name,sku:z.sku}))},{status:409}); }
+          if(type==="SUPPLIER"){ const x=await db.supplier.findMany({where:{businessId:s.businessId,archived:false,name:{equals:name,mode:"insensitive"}},take:5}); if(x.length===1) entityId=x[0].id; else if(x.length>1) return NextResponse.json({error:`I found multiple suppliers named ${name}. Please specify which one.`,matches:x.map((z:any)=>({id:z.id,name:z.name,phone:z.phone}))},{status:409}); }
+        }
+        if(entityId){
+          if(type==="CUSTOMER") row=await db.customer.findFirst({where:{id:entityId,businessId:s.businessId}});
+          if(type==="PRODUCT") row=await db.product.findFirst({where:{id:entityId,businessId:s.businessId}});
+          if(type==="SUPPLIER") row=await db.supplier.findFirst({where:{id:entityId,businessId:s.businessId}});
+          if(type==="EXPENSE") row=await db.expense.findFirst({where:{id:entityId,businessId:s.businessId}});
+          if(type==="REMINDER") row=await db.reminder.findFirst({where:{id:entityId,businessId:s.businessId}});
+        }
+        if(!row) return NextResponse.json({error:`I couldn't safely find that ${type.toLowerCase()}. Please specify its name or details.`},{status:409});
+        if(op==="ARCHIVE") { if(!["CUSTOMER","PRODUCT","SUPPLIER"].includes(type)) return NextResponse.json({error:"Only customers, products and suppliers can be archived safely."},{status:422}); const data={archived:true}; result= type==="CUSTOMER"?await db.customer.update({where:{id:row.id},data}):type==="PRODUCT"?await db.product.update({where:{id:row.id},data}):await db.supplier.update({where:{id:row.id},data}); result={message:`${type[0]+type.slice(1).toLowerCase()} archived. Historical records remain intact.`,record:result}; }
+        else if(op==="CANCEL" && type==="REMINDER") { result=await db.reminder.update({where:{id:row.id},data:{status:"CANCELLED"}}); result={message:"Reminder cancelled.",record:result}; }
+        else if(op==="COMPLETE" && type==="REMINDER") { result=await db.reminder.update({where:{id:row.id},data:{status:"COMPLETED"}}); result={message:"Reminder marked complete.",record:result}; }
+        else { if(!Object.keys(data).length) return NextResponse.json({error:"Tell me what should change."},{status:409}); if(type==="CUSTOMER") result=await db.customer.update({where:{id:row.id},data}); else if(type==="PRODUCT") result=await db.product.update({where:{id:row.id},data}); else if(type==="SUPPLIER") result=await db.supplier.update({where:{id:row.id},data}); else if(type==="EXPENSE") result=await db.expense.update({where:{id:row.id},data}); else result=await db.reminder.update({where:{id:row.id},data}); result={message:`Done. ${type.toLowerCase()} updated.`,record:result}; }
+      }
+      await db.aIAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
+      await db.auditLog.create({data:{businessId:s.businessId,userId:s.user.id,actorType:"AI",action:"AI_ACTION_EXECUTED",entityType:"AIAction",entityId:action.id,after:result as any}});
+      return NextResponse.json({ok:true,result});
+    }
     switch(action.intent){
       case "RECEIVE_PAYMENT": {
         if(!e.amount) return NextResponse.json({error:"What amount did the customer pay?"},{status:409});
-        let customerId=e.customerId as string|undefined;
-        let customerName=String(e.customerName||e.proposedCustomerName||"").trim();
-        // A new customer is created only after the AI action has reached the explicit
-        // confirmation step. The accounting mutation and payment are then committed
-        // through the same deterministic business service flow.
-        // Defense-in-depth: the action must never execute against a stale customerId
-        // when the current action explicitly names a different customer. This prevents
-        // a previous Ramesh conversation from receiving Jinal's payment.
-        if(customerName && customerId){
-          const bound=await db.customer.findFirst({where:{id:customerId,businessId:s.businessId,archived:false}});
-          if(!bound || bound.name.trim().toLowerCase()!==customerName.trim().toLowerCase()){
-            const exact=await db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}},take:2});
-            if(exact.length===1){ customerId=exact[0].id; customerName=exact[0].name; }
-            else if(exact.length===0 && e.createCustomer===true){
-              const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
-              customerId=created.id; customerName=created.name;
-            } else {
-              return NextResponse.json({error:`I won't apply this payment to ${bound?.name||"the previous customer"}. I need a valid customer match for ${customerName}.`,requiresCustomer:true,matches:exact.map(x=>({id:x.id,name:x.name,phone:x.phone})),canCreateCustomer:exact.length===0,proposedCustomerName:customerName},{status:409});
-            }
-          }
-        }
-        if(!customerId && e.createCustomer===true && customerName){
-          const existing=await db.customer.findFirst({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}}});
-          if(existing){ customerId=existing.id; customerName=existing.name; }
-          else {
-            const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
-            customerId=created.id; customerName=created.name;
-          }
-        }
+        const customerId=e.customerId as string|undefined;
+        const customerName=String(e.customerName||"").trim();
         if(!customerId) return NextResponse.json({error:"Which customer should receive this payment?",requiresCustomer:true,matches:e.matches||[],canCreateCustomer:Boolean(e.proposedCustomerName)},{status:409});
         result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai",applyToOutstanding:Boolean(e.applyToOutstanding)});
         result={message:`${money(e.amount)} received from ${customerName||"customer"}.`,payment:result,customerId,customerName}; break;
+      }
+      case "DELETE_CUSTOMER": {
+        if(!e.customerId) return NextResponse.json({error:"Which customer should be archived?",requiresCustomer:true,matches:e.matches||[]},{status:409});
+        const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId,archived:false}});
+        if(!customer) return NextResponse.json({error:"Customer not found or already archived."},{status:404});
+        const archived=await db.customer.update({where:{id:customer.id},data:{archived:true}});
+        result={message:`${archived.name} has been archived. Historical sales and payments were kept intact.`,customer:archived};
+        break;
       }
       case "CREATE_REMINDER":
         {const now=new Date();const due=new Date(now);const day=due.getDay();const delta=(8-day)%7||7;due.setDate(due.getDate()+delta);due.setHours(9,0,0,0);const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId,title:e.title||"Customer follow-up",dueAt:due,channel:"in_app"}});result={message:`Follow-up reminder created for next Monday at 9:00 AM.`,reminder:r};}
         break;
       case "CUSTOMER_STATEMENT":
-        {const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));result={message:`Statement prepared for ${customer.name}.`,customer:customer.name,statement};}
+        {if(!e.customerId)return NextResponse.json({error:"Which customer do you mean?",requiresCustomer:true,matches:e.matches||[]},{status:409});const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));result={message:`Statement prepared for ${customer.name}.`,customer:customer.name,statement};}
         break;
       case "CREATE_EXPENSE":
         result=await createExpense({businessId:s.businessId,userId:s.user.id,category:e.category||"General",amount:e.amount,description:e.description,source:"ai"});
@@ -114,18 +180,9 @@ export async function POST(req:Request){
       }
       case "CREATE_SALE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the sale, but need the product and quantity.",needsDetails:true},{status:409});
-        let customerId=e.customerId as string|undefined;
-        let customerName=String(e.customerName||e.customerQuery||e.proposedCustomerName||"").trim();
-        if(!customerId && customerName){
-          const exact=await db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}},take:5});
-          if(exact.length===1){ customerId=exact[0].id; customerName=exact[0].name; }
-          else if(exact.length>1) return NextResponse.json({error:`I found multiple customers named ${customerName}. Please choose the customer before I save this sale.`,requiresCustomer:true,matches:exact.map(x=>({id:x.id,name:x.name,phone:x.phone,address:x.address}))},{status:409});
-          else if(e.createCustomer===true){
-            const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
-            customerId=created.id; customerName=created.name;
-          }
-          else return NextResponse.json({error:`I couldn't find ${customerName}. I won't save this as a walk-in sale. Should I create this customer?`,requiresCustomer:true,canCreateCustomer:true,proposedCustomerName:customerName},{status:409});
-        }
+        const customerId=e.customerId as string|undefined;
+        const customerName=String(e.customerName||"").trim();
+        if(!customerId) return NextResponse.json({error:"Which customer is this sale for? I won't save this as a walk-in sale.",requiresCustomer:true,proposedCustomerName:e.proposedCustomerName},{status:409});
         result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
         result={message:`Sale ${result.invoiceNumber} created for ${money(result.total)}${customerName?` for ${customerName}`:""}. Outstanding: ${money(result.balanceDue)}.`,sale:result,customerId,customerName};
         break;

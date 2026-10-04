@@ -79,9 +79,33 @@ function amountFromText(text:string){
 }
 
 async function resolveCustomer(businessId:string, query:string){
-  const r=await resolveEntityAdvanced(businessId,"customer",query);
-  return {matches:r.matches,selected:r.selected,confidence:r.confidence};
+  // Customer identity must be strict. Never fuzzy-map a new name such as Ram to Ramesh.
+  const raw=String(query||"").trim(); const q=normalize(raw);
+  if(!q) return {matches:[],selected:null,confidence:0};
+  const rows=await db.customer.findMany({where:{businessId,archived:false},select:{id:true,name:true,phone:true,address:true,aliases:{select:{value:true,normalized:true}}},take:500});
+  const scored=rows.map((c:any)=>{
+    const name=normalize(c.name); const aliases=(c.aliases||[]).map((a:any)=>normalize(a.normalized||a.value)); let score=0;
+    if(name===q || aliases.includes(q)) score=1;
+    else if(q.startsWith(name+" ")) score=.99;
+    else if(aliases.some((a:string)=>a && q.startsWith(a+" "))) score=.99;
+    return {...c,_score:score};
+  }).filter((x:any)=>x._score>0).sort((a:any,b:any)=>b._score-a._score);
+  const top=scored[0]?scored[0]._score:0; const topMatches=scored.filter((x:any)=>x._score===top).slice(0,8);
+  const selected=topMatches.length===1 && top>=.99 ? topMatches[0] : null;
+  return {matches:topMatches,selected,confidence:selected?top:0};
 }
+
+function extractNewCustomerCorrection(text:string){
+  const t=String(text||"").trim();
+  const patterns=[
+    /(?:not|no|nah)\b.*?\bnew\s+cust(?:omer|mer)\b\s+(?:named\s+|called\s+)?([\p{L}][\p{L}.'-]{1,30})(?:\s+(?:from|at)\s+(.+))?$/iu,
+    /(?:new\s+cust(?:omer|mer))\s+(?:named\s+|called\s+)?([\p{L}][\p{L}.'-]{1,30})(?:\s+(?:from|at)\s+(.+))?$/iu,
+    /(?:naya|nayi|new)\s+cust(?:omer|mer)\s+(?:hai|is)?\s*([\p{L}][\p{L}.'-]{1,30})(?:\s+(?:from|at)\s+(.+))?$/iu
+  ];
+  for(const re of patterns){const m=t.match(re);if(m)return {name:m[1].trim(),address:m[2]?.trim()||""};}
+  return null;
+}
+
 async function resolveProduct(businessId:string, query:string){
   const r=await resolveEntityAdvanced(businessId,"product",query);
   return {matches:r.matches,selected:r.selected,confidence:r.confidence};
@@ -117,10 +141,22 @@ export async function interpret(businessId:string,text:string,context?:{
     return /^(?:[\p{L}][\p{L}.'-]{1,30})(?:\s+(?:[\p{L}][\p{L}.'-]{1,20})){0,2}\s*(?:paid|pay|gave|gave me|received from|from|bought|purchased|took|liya|ne|ku|ko|se|க்கு|கிட்ட|ने|को|से|ने)$/iu.test(t)
       || /\b(?:paid|pay|gave|received from|bought|purchased|took|liya|ne|ku|ko|se|க்கு|கிட்ட|ने|को|से)\b/i.test(t) && !/\b(?:he|she|they|him|her|them|avan|aval|avanga|uske|usko|woh|அவன்|அவள்|वह|उसने)\b/i.test(t) && /^[\p{L}]/u.test(t);
   };
-  const safeContextCustomerId = looksLikeExplicitCustomer(String(text)) ? null : (context?.customerId || null);
+  const earlyCustomerCorrection=extractNewCustomerCorrection(text);
+  const safeContextCustomerId = (looksLikeExplicitCustomer(String(text)) || earlyCustomerCorrection) ? null : (context?.customerId || null);
   const normalizedReply=normalize(text);
   const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)\b/i.test(text.trim());
   const negative=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇല്ല|ના)\b/i.test(text.trim());
+  const newCustomerCorrection=earlyCustomerCorrection;
+  if(pendingIntent && pendingEntities && newCustomerCorrection){
+    const entities:any={...pendingEntities,customerId:null,customerName:newCustomerCorrection.name,customerQuery:newCustomerCorrection.name,proposedCustomerName:newCustomerCorrection.name,createCustomer:true,customerResolution:"CREATE_OR_CONFIRM"};
+    if(newCustomerCorrection.address) entities.proposedCustomerAddress=newCustomerCorrection.address;
+    const r=await resolveCustomer(businessId,newCustomerCorrection.name);
+    if(r.selected){
+      entities.customerId=r.selected.id; entities.customerName=r.selected.name; entities.customerResolution="RESOLVED"; entities.createCustomer=false; entities.matches=[{id:r.selected.id,name:r.selected.name,phone:r.selected.phone}];
+      return Interpretation.parse({intent:pendingIntent,entities,confidence:{intent:.99,customer:.99},risk:"MEDIUM",response:`I found ${r.selected.name}. Please confirm this action.`,requiresConfirmation:true,needsClarification:false});
+    }
+    return Interpretation.parse({intent:pendingIntent,entities,confidence:{intent:.99,customer:.99},risk:"MEDIUM",response:`Got it — this is a new customer named ${newCustomerCorrection.name}${newCustomerCorrection.address?` at ${newCustomerCorrection.address}`:""}. Please confirm to continue.`,requiresConfirmation:true,needsClarification:false});
+  }
   if(pendingIntent && pendingEntities && (affirmative || negative)){
     if(negative) return Interpretation.parse({intent:"UNKNOWN",entities:{cancelled:true},confidence:{intent:1},risk:"LOW",response:"Okay, I won't make that change.",requiresConfirmation:false,needsClarification:false});
     const entities={...pendingEntities};
@@ -152,6 +188,15 @@ export async function interpret(businessId:string,text:string,context?:{
     }
   }
 
+  const deleteMatch=text.trim().match(/^(?:remove|delete|archive)\s+(?:customer\s+)?([\p{L}][\p{L}.'-]{1,40})$/iu);
+  if(deleteMatch){
+    const q=deleteMatch[1].trim(); const r=await resolveCustomer(businessId,q);
+    if(r.selected){
+      return Interpretation.parse({intent:"DELETE_CUSTOMER",entities:{customerId:r.selected.id,customerName:r.selected.name,customerQuery:q,matches:[{id:r.selected.id,name:r.selected.name,phone:r.selected.phone}]},confidence:{intent:.99,customer:1},risk:"HIGH",response:`I found ${r.selected.name}. Do you want me to archive this customer? Their historical sales and payments will be retained.`,requiresConfirmation:true,needsClarification:false});
+    }
+    return Interpretation.parse({intent:"DELETE_CUSTOMER",entities:{customerQuery:q,customerName:q,customerResolution:"CREATE_OR_CONFIRM",matches:r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}))},confidence:{intent:.95,customer:.8},risk:"HIGH",response:`I couldn't find a customer named ${q}. I won't remove anyone.`,requiresConfirmation:false,needsClarification:true});
+  }
+
   if(isLocalAIEnabled() || isGeminiEnabled() || process.env.OPENAI_API_KEY){
     try {
       const systemPrompt=`You are the universal natural-language interpretation layer for Hisab Flow, an AI business operating assistant for Indian small businesses.
@@ -171,10 +216,10 @@ You must:
 10. For informational questions, answer naturally from the business data request and do not create a mutation.
 11. If the request is casual/non-business, respond naturally without pretending it is a transaction.
 
-Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, UNKNOWN.
+Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, MANAGE_ENTITY, UNKNOWN. MANAGE_ENTITY is the universal conversational CRUD intent for customers, products, suppliers, expenses and reminders. Use entities {operation:"CREATE|UPDATE|ARCHIVE|CANCEL|COMPLETE", entityType:"CUSTOMER|PRODUCT|SUPPLIER|EXPENSE|REMINDER|SALE|PURCHASE|PAYMENT", entityId, name, fields:{...}, query, matches}. Never invent entityId; resolve explicit names from live records or ask a clarification.
 
 For RECEIVE_PAYMENT, entities may include: customerName, customerQuery, customerId, amount, paymentMethod, currency, matches, customerResolution, proposedCustomerName, proposedCustomerAddress, createCustomer.
-For CREATE_SALE/CREATE_PURCHASE, entities may include items [{productName, productId, quantity, unitPrice}], customer/supplier fields, amount/payment, paymentMethod and notes.
+For CREATE_SALE/CREATE_PURCHASE, entities may include items [{productName, productId, quantity, unitPrice}], customer/supplier fields, amount/payment, paymentMethod and notes. For MANAGE_ENTITY, preserve the user's intended operation and fields exactly; explicit names override old context, while pronouns may use pending context.
 For GENERAL_BUSINESS_QUERY, put the user's question in query and describe any useful filters/date ranges. For purchase/sales searches, include minAmount/maxAmount when the user asks for an amount threshold. Use SALES_ANALYSIS for questions such as “why did sales change”, “what caused sales to drop/grow”, or comparisons across periods.
 
 Return ONLY valid JSON with this exact top-level shape:
@@ -222,26 +267,25 @@ Conversation context: ${JSON.stringify(context||{})}`;
         }
       }
 
-      // Resolve names against tenant-scoped records after AI interpretation.
-      if(parsed.entities.customerName && !parsed.entities.customerId){
-        const r=await resolveCustomer(businessId,String(parsed.entities.customerName));
-        parsed.entities.matches=r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}));
-        if(r.selected){ parsed.entities.customerId=r.selected.id; parsed.entities.customerName=r.selected.name; }
-        else if(r.matches.length===0 && parsed.entities.createCustomer!==true){
-          parsed.entities.customerResolution="CREATE_OR_CONFIRM";
-          parsed.entities.proposedCustomerName=String(parsed.entities.customerName);
-          parsed.needsClarification=true;
-          parsed.requiresConfirmation=true;
-          parsed.response=`I couldn't find ${parsed.entities.proposedCustomerName} in your customers. Should I add this as a new customer and continue with this ${parsed.intent==="CREATE_SALE"?"sale":parsed.intent==="CREATE_PURCHASE"?"purchase":"action"}?`;
-        } else if(r.matches.length>1){
-          parsed.needsClarification=true;
-          parsed.response=`I found multiple customers matching ${parsed.entities.customerName}. Which one do you mean?`;
+      // Resolve/reconcile customer identity against the CURRENT explicit name. Never
+      // keep a stale conversation customerId when the user names another customer.
+      const explicitName=String(parsed.entities.customerName||parsed.entities.customerQuery||parsed.entities.proposedCustomerName||earlyCustomerCorrection?.name||"").trim();
+      if(explicitName){
+        const r=await resolveCustomer(businessId,explicitName);
+        parsed.entities.matches=r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone,address:x.address}));
+        if(r.selected){
+          parsed.entities.customerId=r.selected.id; parsed.entities.customerName=r.selected.name; parsed.entities.customerQuery=explicitName;
+          if(parsed.entities.customerResolution!=="CREATE_OR_CONFIRM") parsed.entities.customerResolution="RESOLVED";
+        } else {
+          parsed.entities.customerId=null; parsed.entities.customerName=explicitName;
+          if(parsed.intent==="CUSTOMER_STATEMENT"||parsed.intent==="CUSTOMER_BALANCE"||parsed.intent==="OUTSTANDING_CUSTOMERS") parsed.entities.createCustomer=false;
+          if(parsed.entities.createCustomer!==true){
+            parsed.entities.customerResolution="CREATE_OR_CONFIRM";
+            parsed.entities.proposedCustomerName=explicitName;
+            parsed.needsClarification=true; parsed.requiresConfirmation=true;
+            parsed.response=`I couldn't find ${explicitName} in your customers. Should I add this as a new customer and continue with this ${parsed.intent==="CREATE_SALE"?"sale":parsed.intent==="CREATE_PURCHASE"?"purchase":"action"}?`;
+          }
         }
-      }
-      if(parsed.entities.customerQuery && !parsed.entities.customerId && !parsed.entities.customerName){
-        const r=await resolveCustomer(businessId,String(parsed.entities.customerQuery));
-        parsed.entities.matches=r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}));
-        if(r.selected){ parsed.entities.customerId=r.selected.id; parsed.entities.customerName=r.selected.name; }
       }
       if(parsed.entities.productName && !parsed.entities.productId){
         const r=await resolveProduct(businessId,String(parsed.entities.productName));
@@ -312,7 +356,7 @@ Conversation context: ${JSON.stringify(context||{})}`;
       }
 
       // Conversational confirmations are always treated as financial confirmation, not a new action.
-      const mutationIntents=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK"];
+      const mutationIntents=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK","MANAGE_ENTITY"];
       if(mutationIntents.includes(parsed.intent)){
         const e=parsed.entities||{};
         if(parsed.intent==="RECEIVE_PAYMENT") {
@@ -347,6 +391,12 @@ Conversation context: ${JSON.stringify(context||{})}`;
           else if(parsed.intent==="CREATE_PURCHASE") parsed.response=`I understood: ${itemText||"the requested purchase"}${amount?` for ${amount}`:""}${customer?` from ${customer}`:""}. Should I record this purchase?`;
           else if(parsed.intent==="CREATE_EXPENSE") parsed.response=`I understood: expense of ${amount}${e.category?` for ${e.category}`:""}. Should I record it?`;
           else if(parsed.intent==="ADJUST_STOCK") parsed.response=`I understood: adjust ${e.productName||"the product"} by ${e.quantity||"the requested quantity"}. Should I apply it?`;
+          else if(parsed.intent==="MANAGE_ENTITY") {
+            const op=String(e.operation||"UPDATE").toUpperCase(), typ=String(e.entityType||"record").toLowerCase(), name=e.name||e.customerName||e.productName||e.supplierName||e.query||"this record";
+            const actionWord=op==="CREATE"?"create":op==="ARCHIVE"?"archive":op==="CANCEL"?"cancel":op==="COMPLETE"?"complete":"update";
+            parsed.risk=(op==="ARCHIVE"||op==="CANCEL")?"HIGH":"MEDIUM";
+            parsed.response=`I understood: ${actionWord} ${typ} ${name}. Should I do that?`;
+          }
         }
       }
       return Interpretation.parse(parsed);

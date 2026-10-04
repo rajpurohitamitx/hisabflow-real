@@ -17,12 +17,21 @@ export async function POST(req:Request){
     // or "add the remaining balance". Explicit customer names must be resolved afresh.
     const explicitCustomerReference = /^(?!\s*(?:he|she|they|him|her|them|avan|aval|avanga|uske|usko|woh|वह|उसने|उसे|அவன்|அவள்)\b)[\p{L}][\p{L}.'-]{1,30}(?:\s+[\p{L}][\p{L}.'-]{1,20}){0,2}\s*(?:paid|pay|gave|received|bought|purchased|took|liya|ne|ku|ko|se|ने|को|से|க்கு|கிட்ட)\b/iu.test(t)
       || /\b(?:paid|pay|gave|received from|bought|purchased|took|liya|ne|ku|ko|se|ने|को|से|க்கு|கிட்ட)\b/i.test(t) && /^[\p{L}]/u.test(t);
-    const contextualCustomerId = explicitCustomerReference ? null : conversation?.customerId;
+    let namedCustomerInText=false;
+    try{
+      const knownCustomers=await db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{name:true},take:500});
+      namedCustomerInText=knownCustomers.some((c:any)=>{
+        const name=String(c.name||"").trim(); if(name.length<2)return false;
+        const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+        return new RegExp(`(^|\\W)${escaped}(?=\\W|$)`,'i').test(t);
+      });
+    }catch{}
+    const contextualCustomerId = (explicitCustomerReference||namedCustomerInText) ? null : conversation?.customerId;
     const result=await interpret(s.businessId,text,{customerId:contextualCustomerId,productId:conversation?.productId,lastIntent:conversation?.lastIntent,pendingIntent:safePending?.intent||null,pendingEntities:safePending?.entities||null,pendingQuestion:safePending?.question||null,history:(conversation?.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text}))});
     const action=await db.aIAction.create({data:{businessId:s.businessId,userId:s.user.id,input:text,intent:result.intent,entities:result.entities as any,confidence:result.confidence as any,risk:result.risk,status:"INTERPRETED"}});
     const conv=conversation || await db.conversation.create({data:{businessId:s.businessId,key:conversationId}});
     await db.conversationMessage.createMany({data:[{conversationId:conv.id,role:"user",text},{conversationId:conv.id,role:"assistant",text:result.response||""}]});
-    await db.conversation.update({where:{id:conv.id},data:{customerId:(result.entities as any).customerId||conv.customerId,productId:(result.entities as any).productId||conv.productId,lastIntent:result.intent}});
+    await db.conversation.update({where:{id:conv.id},data:{customerId:(result.entities as any).customerId || ((explicitCustomerReference||namedCustomerInText)?null:conv.customerId),productId:(result.entities as any).productId||conv.productId,lastIntent:result.intent}});
     return NextResponse.json({actionId:action.id,conversationId,result});
   }catch(e:any){return NextResponse.json({error:e.message},{status:e.message==="UNAUTHENTICATED"?401:500});}
 }
