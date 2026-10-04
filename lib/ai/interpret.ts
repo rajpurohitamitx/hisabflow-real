@@ -132,7 +132,6 @@ Conversation context: ${JSON.stringify(context||{})}`;
       parsed.entities ||= {};
       parsed.confidence ||= {};
       parsed.needsClarification=Boolean(parsed.needsClarification);
-      if(context?.pendingIntent && context.pendingEntities && !parsed.needsClarification && (affirmative || negative)){ /* server-side pending handling above is authoritative */ }
 
       // Conversational confirmation/selection: carry the unresolved operation forward
       // so replies like "yes", "haan", "ஆம்" or "Jinal Adyar" are answers to the
