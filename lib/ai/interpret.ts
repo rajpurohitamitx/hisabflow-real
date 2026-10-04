@@ -65,8 +65,6 @@ You must:
 8. For a financial mutation, require confirmation after all required entities/values are resolved. Confirmation can be answered by voice or text.
 9. For informational questions, answer naturally from the business data request and do not create a mutation.
 10. If the request is casual/non-business, respond naturally without pretending it is a transaction.
-11. Pay close attention to money direction. "X paid me" / "X gave me" usually means money received from X; "I paid X" / "X took money from me" usually means money paid out to X. If the counterparty role is unclear, ask whether X is a customer, supplier, employee, or other party instead of guessing.
-12. Understand sale language such as "Jinal bought an item for 500 but paid only 300" as a sale with total 500 and received payment 300, leaving 200 outstanding, subject to customer/product resolution.
 
 Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, UNKNOWN.
 
