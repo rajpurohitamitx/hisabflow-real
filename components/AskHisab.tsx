@@ -9,38 +9,65 @@ export default function AskHisab(){
  const [text,setText]=useState("");
  const [msgs,setMsgs]=useState<Msg[]>([{role:"assistant",text:"I’m your business copilot. Speak naturally — English, Hindi, Tamil, Telugu or mixed language. I’ll understand the intent, check your live records, and ask before making a risky financial change."}]);
  const [pending,setPending]=useState<any>(null); const pendingRef=useRef<any>(null); const [busy,setBusy]=useState(false); const [listening,setListening]=useState(false); const [speaking,setSpeaking]=useState(false); const [voiceEnabled,setVoiceEnabled]=useState(true); const [language,setLanguage]=useState("Auto");
- const recRef=useRef<any>(null); const mediaRef=useRef<MediaRecorder|null>(null); const autoListenTimerRef=useRef<any>(null); const silenceTimerRef=useRef<any>(null); const audioContextRef=useRef<AudioContext|null>(null); const livePcRef=useRef<RTCPeerConnection|null>(null); const liveDcRef=useRef<RTCDataChannel|null>(null); const liveStreamRef=useRef<MediaStream|null>(null); const chunksRef=useRef<Blob[]>([]); const audioRef=useRef<HTMLAudioElement|null>(null);
+ const recRef=useRef<any>(null); const wakeRef=useRef<any>(null); const voiceSessionRef=useRef(false); const mediaRef=useRef<MediaRecorder|null>(null); const autoListenTimerRef=useRef<any>(null); const silenceTimerRef=useRef<any>(null); const audioContextRef=useRef<AudioContext|null>(null); const livePcRef=useRef<RTCPeerConnection|null>(null); const liveDcRef=useRef<RTCDataChannel|null>(null); const liveStreamRef=useRef<MediaStream|null>(null); const chunksRef=useRef<Blob[]>([]); const audioRef=useRef<HTMLAudioElement|null>(null);
  useEffect(()=>{pendingRef.current=pending;},[pending]);
- useEffect(()=>()=>{recRef.current?.stop();mediaRef.current?.stop();if(autoListenTimerRef.current)clearTimeout(autoListenTimerRef.current);if(silenceTimerRef.current)clearTimeout(silenceTimerRef.current);audioContextRef.current?.close();audioRef.current?.pause();livePcRef.current?.close();liveStreamRef.current?.getTracks().forEach(t=>t.stop())},[]);
+ useEffect(()=>{
+   const Recognition=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;
+   if(!Recognition) return;
+   let stopped=false;
+   const startWake=()=>{
+     if(stopped||voiceSessionRef.current||wakeRef.current||speaking||busy) return;
+     try{
+       const r=new Recognition(); wakeRef.current=r; r.continuous=true; r.interimResults=true; r.lang="en-IN";
+       r.onresult=(e:any)=>{
+         let heard=""; for(let i=e.resultIndex;i<e.results.length;i++) heard+=` ${e.results[i][0].transcript}`;
+         const n=heard.toLowerCase().replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+         if(/\b(?:hi|hey|hai|hello)\s+(?:hisab|hisaab|hesab|hisabflow|hisab flow)\b/.test(n)){
+           try{r.stop()}catch{} wakeRef.current=null; voiceSessionRef.current=true; setTimeout(()=>startVoice(true),120);
+         }
+       };
+       r.onerror=()=>{wakeRef.current=null; if(!stopped&&!voiceSessionRef.current)setTimeout(startWake,900)};
+       r.onend=()=>{wakeRef.current=null; if(!stopped&&!voiceSessionRef.current)setTimeout(startWake,700)};
+       r.start();
+     }catch{wakeRef.current=null;}
+   };
+   startWake();
+   return()=>{stopped=true; try{wakeRef.current?.stop()}catch{} wakeRef.current=null;};
+ },[speaking,busy]);
+ useEffect(()=>()=>{try{wakeRef.current?.stop()}catch{} recRef.current?.stop();mediaRef.current?.stop();if(autoListenTimerRef.current)clearTimeout(autoListenTimerRef.current);if(silenceTimerRef.current)clearTimeout(silenceTimerRef.current);audioContextRef.current?.close();audioRef.current?.pause();livePcRef.current?.close();liveStreamRef.current?.getTracks().forEach(t=>t.stop())},[]);
 
  async function speak(answer:string){
    if(!voiceEnabled||!answer.trim()) return;
+   try{recRef.current?.stop()}catch{}
+   try{mediaRef.current?.stop()}catch{}
+   setListening(false);
    const localMode=process.env.NEXT_PUBLIC_AI_PROVIDER==='ollama'||process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini';
    if(localMode){
-     if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}
+     if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>{setSpeaking(false);if(voiceSessionRef.current&&!busy)setTimeout(()=>startVoice(true),350)};u.onerror=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}
      return;
    }
-   try{setSpeaking(true);const r=await fetch('/api/voice/speak',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:answer,language})});if(!r.ok)throw new Error();const blob=await r.blob();const url=URL.createObjectURL(blob);audioRef.current=new Audio(url);audioRef.current.onended=()=>{setSpeaking(false);URL.revokeObjectURL(url)};await audioRef.current.play();}
-   catch{if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}else setSpeaking(false)}
+   try{setSpeaking(true);const r=await fetch('/api/voice/speak',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:answer,language})});if(!r.ok)throw new Error();const blob=await r.blob();const url=URL.createObjectURL(blob);audioRef.current=new Audio(url);audioRef.current.onended=()=>{setSpeaking(false);URL.revokeObjectURL(url);if(voiceSessionRef.current&&!busy)setTimeout(()=>startVoice(true),350)};await audioRef.current.play();}
+   catch{if("speechSynthesis" in window){setSpeaking(true);const u=new SpeechSynthesisUtterance(answer);u.lang=language==='Hindi'?'hi-IN':language==='Tamil'?'ta-IN':language==='Telugu'?'te-IN':'en-IN';u.onend=()=>{setSpeaking(false);if(voiceSessionRef.current&&!busy)setTimeout(()=>startVoice(true),350)};u.onerror=()=>setSpeaking(false);speechSynthesis.cancel();speechSynthesis.speak(u)}else setSpeaking(false)}
  }
  function stopSpeaking(){audioRef.current?.pause();if("speechSynthesis" in window)speechSynthesis.cancel();setSpeaking(false)}
  async function send(value=text, pendingOverride?:any){
    if(!value.trim()||busy)return;
    const clean=value.trim();setText("");setMsgs(m=>[...m,{role:"user",text:clean}]);setBusy(true);
    try{
-     const r=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:clean,conversationId:'main',pendingContext:pendingOverride||((pending&&!pending.auto)?{intent:pending.result?.intent,entities:pending.result?.entities,question:pending.result?.response}:null)})});
+     const r=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:clean,conversationId:'main',pendingContext:pendingOverride||((pending&&!pending.auto&&clean.split(/\s+/).length<=12)?{intent:pending.result?.intent,entities:pending.result?.entities,question:pending.result?.response}:null)})});
      const d=await r.json();if(!r.ok)throw new Error(d.error||'Something went wrong.');
      const result=d.result;const answer=result.response||'I understood the request.';
-     setMsgs(m=>[...m,{role:'assistant',text:answer}]);
      const needsFollowup=Boolean(result.needsClarification||result.requiresConfirmation||result.risk!=='LOW');
      const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા)\b/i.test(clean);
-     const resolvingNewCustomer=Boolean(pendingOverride?.entities?.customerResolution==='CREATE_OR_CONFIRM' && affirmative && result?.entities?.createCustomer && (result?.entities?.customerName||result?.entities?.proposedCustomerName));
+     const resolvingNewCustomer=Boolean(pendingOverride?.entities?.customerResolution==='CREATE_OR_CONFIRM' && affirmative && result?.entities?.createCustomer && (result?.entities?.customerName||result?.entities?.proposedCustomerName) && result?.needsClarification===false);
      const confirmingExistingAction=Boolean(pendingOverride && affirmative && !pendingOverride.entities?.customerResolution && result?.intent && result.intent!=='UNKNOWN' && !result.needsClarification);
-     if(needsFollowup) setPending({actionId:d.actionId,result});
+     const shouldExecuteNow=Boolean(resolvingNewCustomer || confirmingExistingAction);
+     if(shouldExecuteNow) setPending(null);
+     else if(needsFollowup) setPending({actionId:d.actionId,result});
      else if(result.intent!=='UNKNOWN') setPending({actionId:d.actionId,result,auto:true});
      else setPending(null);
-     await speak(answer);
-     if(resolvingNewCustomer || confirmingExistingAction){
+     if(!shouldExecuteNow){ setMsgs(m=>[...m,{role:'assistant',text:answer}]); await speak(answer); }
+     if(shouldExecuteNow){
        setBusy(true);
        try{
          const er=await fetch('/api/ai/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({actionId:d.actionId,confirmed:true})});
@@ -52,10 +79,7 @@ export default function AskHisab(){
        finally{setBusy(false)}
        return;
      }
-     if(needsFollowup){
-       if(autoListenTimerRef.current)clearTimeout(autoListenTimerRef.current);
-       autoListenTimerRef.current=setTimeout(()=>{ if(!mediaRef.current) startVoice(true); },450);
-     }
+     if(voiceSessionRef.current && !voiceEnabled){ voiceSessionRef.current=false; }
    }catch(e:any){setMsgs(m=>[...m,{role:'assistant',text:e.message||'Something went wrong.'}])}
    finally{setBusy(false)}
  }
@@ -84,6 +108,7 @@ export default function AskHisab(){
    finally{setBusy(false)}
  }
  async function startVoice(auto=false){
+   voiceSessionRef.current=true;
    if(listening){recRef.current?.stop();mediaRef.current?.stop();setListening(false);return}
    const localMode=process.env.NEXT_PUBLIC_AI_PROVIDER==='ollama'||process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini';
    if(!localMode){

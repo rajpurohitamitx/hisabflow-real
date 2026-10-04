@@ -58,6 +58,7 @@ export default function VoiceAssistant() {
 
   const speak = useCallback(async (answer: string) => {
     if (!voiceEnabled || !answer.trim() || !mountedRef.current) return;
+    cleanupCapture();
     setSpeaking(true);
     const lang = LANGUAGE_CODES[language] || "en-IN";
     await new Promise<void>(async (resolve) => {
@@ -79,7 +80,7 @@ export default function VoiceAssistant() {
         resolve();
       }
     });
-  }, [language, voiceEnabled]);
+  }, [language, voiceEnabled, cleanupCapture]);
 
   const stopSpeaking = useCallback(() => {
     audioRef.current?.pause();
@@ -294,7 +295,7 @@ export default function VoiceAssistant() {
       recognition.onresult = (event: any) => {
         let transcript = "";
         for (let i = event.resultIndex; i < event.results.length; i++) transcript += ` ${event.results[i][0].transcript}`;
-        if (/\b(?:hi|hey|hai|hay)\s+hisab(?:\s+flow)?\b/i.test(transcript)) {
+        if (/\b(?:hi|hey|hai|hello|hay)\s+(?:hisab|hisaab|hesab)(?:\s+flow)?\b/i.test(transcript)) {
           try { recognition.stop(); } catch {}
           speechRef.current = null;
           activate();

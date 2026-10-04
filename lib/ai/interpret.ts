@@ -17,6 +17,34 @@ export const Interpretation = z.object({
 });
 export type Interpretation = z.infer<typeof Interpretation>;
 
+
+function unitKind(unit:string){
+  const u=String(unit||'piece').trim().toLowerCase();
+  if(/^(kg|kgs|kilo|kilos|kilogram|kilograms)$/.test(u)) return 'kg';
+  if(/^(g|gm|gms|gram|grams)$/.test(u)) return 'g';
+  if(/^(mg|milligram|milligrams)$/.test(u)) return 'mg';
+  return 'other';
+}
+function quantityToStoredUnit(quantity:number, spokenUnit:string|undefined, storedUnit:string){
+  const from=unitKind(spokenUnit||storedUnit), to=unitKind(storedUnit);
+  if(from===to || from==='other' || to==='other') return quantity;
+  if(from==='g' && to==='kg') return quantity/1000;
+  if(from==='kg' && to==='g') return quantity*1000;
+  if(from==='mg' && to==='g') return quantity/1000;
+  if(from==='g' && to==='mg') return quantity*1000;
+  if(from==='mg' && to==='kg') return quantity/1000000;
+  if(from==='kg' && to==='mg') return quantity*1000000;
+  return quantity;
+}
+function displayQuantity(quantity:number, unit:string){
+  const k=unitKind(unit);
+  if(k==='kg' && quantity<1) return `${(quantity*1000).toLocaleString('en-IN',{maximumFractionDigits:3})} g`;
+  if(k==='kg') return `${quantity.toLocaleString('en-IN',{maximumFractionDigits:3})} kg`;
+  if(k==='g') return `${quantity.toLocaleString('en-IN',{maximumFractionDigits:3})} g`;
+  if(k==='mg') return `${quantity.toLocaleString('en-IN',{maximumFractionDigits:3})} mg`;
+  return `${quantity.toLocaleString('en-IN',{maximumFractionDigits:3})} ${unit}`;
+}
+
 function amountFromText(text:string){
   const cleaned=text.toLowerCase().replace(/,/g,"");
   const k=cleaned.match(/(?:₹|rs\.?|inr\s*)?(\d+(?:\.\d+)?)\s*k\b/); if(k) return Number(k[1])*1000;
@@ -63,7 +91,7 @@ export async function interpret(businessId:string,text:string,context?:{
     return Interpretation.parse({
       intent:pendingIntent, entities, confidence:{intent:1,entities:1},
       risk:pendingIntent==="GENERAL_BUSINESS_QUERY"||pendingIntent==="LOW_STOCK"||pendingIntent==="DAILY_BRIEFING"?"LOW":"MEDIUM",
-      response:entities.createCustomer && entities.proposedCustomerName ? `Add ${entities.proposedCustomerName} and record this action?` : "Confirmed. I’m ready to apply this action.",
+      response:entities.createCustomer && entities.proposedCustomerName ? `Add ${entities.proposedCustomerName} and record this ${pendingIntent==="CREATE_SALE"?"sale":pendingIntent==="CREATE_PURCHASE"?"purchase":"action"}?` : "Confirmed. I’m ready to apply this action.",
       requiresConfirmation:true, needsClarification:false
     });
   }
@@ -99,11 +127,12 @@ You must:
 3. Preserve the semantic meaning of Indian number expressions: 200, 2 000, 2,000, two thousand, दो सौ, दो हजार, இருநூறு, 2k, 20k, etc. Do not confuse 2,000 with 2.
 4. Resolve entities conservatively using the live business records supplied by the application. Never invent IDs.
 5. If exactly one entity is a clear match, return its name/query so the server can resolve it. If multiple are plausible, return all useful candidates and ask the user to choose. If none exists and the user appears to refer to a person/customer, set customerResolution to CREATE_OR_CONFIRM and ask whether a new customer should be added.
-6. Understand follow-up answers such as "yes", "no", "Jinal Adyar", "the second one", "haan", "ஆம்", "yes add her", "show me", and "where is it". A short follow-up refers to the pending question or immediately previous business question unless the user clearly starts a new topic. Use pending conversation context and recent history.
-7. Ask the smallest possible clarification question when required information is missing. Never guess a financial value, person or product.
-8. For a financial mutation, require confirmation after all required entities/values are resolved. Confirmation can be answered by voice or text.
-9. For informational questions, answer naturally from the business data request and do not create a mutation.
-10. If the request is casual/non-business, respond naturally without pretending it is a transaction.
+6. Understand follow-up answers such as "yes", "no", "Jinal Adyar", "the second one", "haan", "ஆம்", "yes add her", "show me", and "where is it".
+7. For a sale, if the user gives a money value for a product (for example, "Jinal took ₹200 worth of Bajra") and the product has a stored sellingPrice, calculate quantity = amount / sellingPrice. If the user gives quantity (for example, "Jinal took 500 grams of Bajra"), calculate amount = quantity × sellingPrice. Respect kg/g/mg conversion and the product.unit. Never treat this as a missing quantity when the price makes the quantity determinable. A short follow-up refers to the pending question or immediately previous business question unless the user clearly starts a new topic. Use pending conversation context and recent history.
+8. Ask the smallest possible clarification question when required information is missing. Never guess a financial value, person or product.
+9. For a financial mutation, require confirmation after all required entities/values are resolved. Confirmation can be answered by voice or text.
+10. For informational questions, answer naturally from the business data request and do not create a mutation.
+11. If the request is casual/non-business, respond naturally without pretending it is a transaction.
 
 Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, UNKNOWN.
 
@@ -146,7 +175,7 @@ Conversation context: ${JSON.stringify(context||{})}`;
           if(context.pendingEntities.proposedCustomerAddress && !parsed.entities.proposedCustomerAddress) parsed.entities.proposedCustomerAddress=context.pendingEntities.proposedCustomerAddress;
           parsed.needsClarification=false;
           parsed.requiresConfirmation=true;
-          parsed.response=parsed.entities.createCustomer&&parsed.entities.proposedCustomerName?`Add ${parsed.entities.proposedCustomerName} and record this payment?`:"Please confirm this action.";
+          parsed.response=parsed.entities.createCustomer&&parsed.entities.proposedCustomerName?`Add ${parsed.entities.proposedCustomerName} and record this ${parsed.intent==="CREATE_SALE"?"sale":parsed.intent==="CREATE_PURCHASE"?"purchase":"action"}?`:"Please confirm this action.";
         } else if(negative){
           parsed.intent="UNKNOWN";
           parsed.entities={cancelled:true};
@@ -166,7 +195,7 @@ Conversation context: ${JSON.stringify(context||{})}`;
           parsed.entities.proposedCustomerName=String(parsed.entities.customerName);
           parsed.needsClarification=true;
           parsed.requiresConfirmation=true;
-          parsed.response=`I couldn't find ${parsed.entities.proposedCustomerName} in your customers. Should I add this as a new customer and record the payment?`;
+          parsed.response=`I couldn't find ${parsed.entities.proposedCustomerName} in your customers. Should I add this as a new customer and continue with this ${parsed.intent==="CREATE_SALE"?"sale":parsed.intent==="CREATE_PURCHASE"?"purchase":"action"}?`;
         } else if(r.matches.length>1){
           parsed.needsClarification=true;
           parsed.response=`I found multiple customers matching ${parsed.entities.customerName}. Which one do you mean?`;
@@ -179,27 +208,78 @@ Conversation context: ${JSON.stringify(context||{})}`;
       }
       if(parsed.entities.productName && !parsed.entities.productId){
         const r=await resolveProduct(businessId,String(parsed.entities.productName));
-        parsed.entities.productMatches=r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock)}));
-        if(r.selected){ parsed.entities.productId=r.selected.id; parsed.entities.productName=r.selected.name; }
+        parsed.entities.productMatches=r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock),unit:x.unit,sellingPrice:Number(x.sellingPrice||0)}));
+        if(r.selected){ parsed.entities.productId=r.selected.id; parsed.entities.productName=r.selected.name; parsed.entities.productUnit=r.selected.unit; parsed.entities.sellingPrice=Number(r.selected.sellingPrice||0); }
         else if(r.matches.length!==1){ parsed.needsClarification=true; parsed.response=parsed.response||`Which product do you mean by ${parsed.entities.productName}?`; }
       }
       if(Array.isArray(parsed.entities.items)){
         const resolved=[];
-        for(const item of parsed.entities.items){
+        for(const rawItem of parsed.entities.items){
+          const item={...rawItem};
           const r=await resolveProduct(businessId,String(item.productName||item.name||""));
-          if(r.selected) resolved.push({...item,productId:r.selected.id,productName:r.selected.name});
-          else resolved.push({...item,productMatches:r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock)}))});
+          if(r.selected){
+            const product=r.selected;
+            item.productId=product.id; item.productName=product.name; item.unit=product.unit; item.sellingPrice=Number(product.sellingPrice||0);
+            const explicitAmount=item.amount!=null?Number(item.amount):(parsed.intent==='CREATE_SALE' && parsed.entities.amount!=null && parsed.entities.items.length===1?Number(parsed.entities.amount):undefined);
+            let quantity=item.quantity==null?undefined:Number(item.quantity);
+            const spokenUnit=String(item.quantityUnit||item.unitName||'').trim()||undefined;
+            if(quantity!=null && Number.isFinite(quantity) && spokenUnit) quantity=quantityToStoredUnit(quantity,spokenUnit,String(product.unit||'piece'));
+            if((quantity==null || !Number.isFinite(quantity) || quantity<=0) && explicitAmount!=null && explicitAmount>0 && Number(product.sellingPrice)>0){
+              quantity=explicitAmount/Number(product.sellingPrice);
+              item.quantity=quantity; item.quantityUnit=product.unit; item.calculatedFromAmount=true; item.amount=explicitAmount;
+            } else if(quantity!=null && quantity>0 && (explicitAmount==null || !Number.isFinite(explicitAmount)) && Number(product.sellingPrice)>0){
+              item.quantity=quantity; item.amount=quantity*Number(product.sellingPrice); item.calculatedFromQuantity=true;
+              if(parsed.entities.items.length===1 && parsed.entities.amount==null) parsed.entities.amount=item.amount;
+            } else if(quantity!=null && quantity>0 && explicitAmount!=null){
+              item.quantity=quantity; item.amount=explicitAmount;
+            }
+            item.displayQuantity=item.quantity!=null?displayQuantity(Number(item.quantity),String(product.unit||'piece')):undefined;
+          } else {
+            item.productMatches=r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock),unit:x.unit,sellingPrice:Number(x.sellingPrice||0)}));
+          }
+          resolved.push(item);
         }
         parsed.entities.items=resolved;
         if(resolved.some((x:any)=>!x.productId)) parsed.needsClarification=true;
       }
 
+      // A product + customer + money/quantity phrase is a sale, not a payment, when
+      // the language describes the customer taking/buying the goods. This protects
+      // natural Hindi/Tamil/Tanglish phrasing from being misclassified as RECEIVE_PAYMENT.
+      const saleLanguage=/(\btook\b|\bgot\b|\bbought\b|\bpurchased\b|\bworth\b|\bki?d?ha?\b|\bliya\b|\ble liya\b|\bvaangina\b|\bvangi\b|\beduththu\b|\bஎடுத்த\b|\bவாங்க\b|\bखरीदा\b|\bलिए\b|\bलिया\b)/i.test(String(text));
+      if(parsed.intent==='RECEIVE_PAYMENT' && Array.isArray(parsed.entities.items) && parsed.entities.items.length && saleLanguage){
+        parsed.intent='CREATE_SALE';
+      }
+
       // Conversational confirmations are always treated as financial confirmation, not a new action.
-      if(parsed.intent==="RECEIVE_PAYMENT" || parsed.intent==="CREATE_SALE" || parsed.intent==="CREATE_PURCHASE" || parsed.intent==="CREATE_EXPENSE" || parsed.intent==="ADJUST_STOCK"){
-        if(!parsed.needsClarification) parsed.requiresConfirmation=true;
-        if(parsed.intent==="RECEIVE_PAYMENT" && !parsed.entities.customerId && !parsed.entities.customerResolution){
-          parsed.needsClarification=true;
-          parsed.response=parsed.response||"Which customer is this payment for?";
+      const mutationIntents=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK"];
+      if(mutationIntents.includes(parsed.intent)){
+        const e=parsed.entities||{};
+        if(parsed.intent==="RECEIVE_PAYMENT" && (e.amount===null || e.amount===undefined || Number.isNaN(Number(e.amount)))){
+          parsed.needsClarification=true; parsed.requiresConfirmation=false; parsed.response="How much did the customer pay?";
+        }
+        if((parsed.intent==="CREATE_SALE"||parsed.intent==="CREATE_PURCHASE") && Array.isArray(e.items)){
+          const unresolved=e.items.some((x:any)=>!x.productId);
+          const missingQuantity=e.items.some((x:any)=>x.quantity===null||x.quantity===undefined||Number(x.quantity)<=0);
+          const cannotPrice=e.items.some((x:any)=>(x.quantity===null||x.quantity===undefined||Number(x.quantity)<=0) && !(x.amount!=null && Number(x.amount)>0 && Number(x.sellingPrice)>0));
+          const missingPrice=e.items.some((x:any)=>Number(x.sellingPrice||0)<=0 && ((x.quantity!=null&&Number(x.quantity)>0)|| (x.amount!=null&&Number(x.amount)>0)));
+          if(unresolved){parsed.needsClarification=true;parsed.requiresConfirmation=false;parsed.response="Which product should I use?";}
+          else if(missingPrice){parsed.needsClarification=true;parsed.requiresConfirmation=false;parsed.response="I found the product, but it has no selling price. What selling price should I use?";}
+          else if(cannotPrice || (missingQuantity && !e.amount)){parsed.needsClarification=true;parsed.requiresConfirmation=false;parsed.response="Tell me either the quantity or the total value, and I’ll calculate the other from the product selling price.";}
+        }
+        if(!parsed.needsClarification){
+          parsed.requiresConfirmation=true;
+          const customer=e.customerName||e.customerQuery||e.proposedCustomerName;
+          const itemText=Array.isArray(e.items)?e.items.map((x:any)=>`${x.displayQuantity||x.quantity} × ${x.productName||x.name||"item"}${x.unitPrice!=null?` at ₹${x.unitPrice}`:x.sellingPrice!=null?` at ₹${Number(x.sellingPrice).toLocaleString("en-IN")}/${x.unit||"unit"}`:""}`).join(", "):"";
+          const derivedAmount=Array.isArray(e.items)?e.items.reduce((sum:number,x:any)=>sum+(x.amount!=null?Number(x.amount):(x.quantity!=null&&x.sellingPrice!=null?Number(x.quantity)*Number(x.sellingPrice):0)),0):0;
+          const amount=e.amount!=null?`₹${Number(e.amount).toLocaleString("en-IN")}`:(derivedAmount>0?`₹${derivedAmount.toLocaleString("en-IN")}`:"");
+          const payment=e.payment!=null?`₹${Number(e.payment).toLocaleString("en-IN")} paid`:"";
+          const method=e.paymentMethod?` via ${String(e.paymentMethod).toLowerCase()}`:"";
+          if(parsed.intent==="RECEIVE_PAYMENT") parsed.response=`I understood: ${customer||"the customer"} ${e.createCustomer?"will be added and ":""}will pay ${amount}${method}. Should I record it?`;
+          else if(parsed.intent==="CREATE_SALE") parsed.response=`I understood: ${customer?customer+" — ":""}${itemText||"the requested sale"}${amount?` for ${amount}`:""}${payment?`, ${payment}${method}`:""}. Should I save this sale?`;
+          else if(parsed.intent==="CREATE_PURCHASE") parsed.response=`I understood: ${itemText||"the requested purchase"}${amount?` for ${amount}`:""}${customer?` from ${customer}`:""}. Should I record this purchase?`;
+          else if(parsed.intent==="CREATE_EXPENSE") parsed.response=`I understood: expense of ${amount}${e.category?` for ${e.category}`:""}. Should I record it?`;
+          else if(parsed.intent==="ADJUST_STOCK") parsed.response=`I understood: adjust ${e.productName||"the product"} by ${e.quantity||"the requested quantity"}. Should I apply it?`;
         }
       }
       return Interpretation.parse(parsed);

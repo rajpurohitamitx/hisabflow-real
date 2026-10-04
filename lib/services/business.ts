@@ -10,7 +10,7 @@ function normalizePaymentMethod(value: unknown): PaymentMethod {
 }
 const D = Prisma.Decimal;
 
-function dec(v: unknown) { const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error("Invalid amount or quantity."); return new D(String(v)); }
+function dec(v: unknown) { if (v === null || v === undefined || v === "") throw new Error("A required amount or quantity is missing."); const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error("Invalid amount or quantity."); return new D(String(v)); }
 function invoiceNo() { return `INV-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random()*900+100)}`; }
 
 export async function createSale(input: { businessId:string; userId?:string; customerId?:string|null; items:{productId:string; quantity:number|string; rate?:number|string}[]; payment?:number|string; paymentMethod?:PaymentMethod|string; occurredAt?:Date; notes?:string; source?:string; }) {
