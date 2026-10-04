@@ -121,6 +121,13 @@ export async function interpret(businessId:string,text:string,context?:{
   history?:Array<{role:string;text:string}>;
 }):Promise<Interpretation>{
   const memories=await db.businessMemory.findMany({where:{businessId,active:true},take:50});
+  const bareText=String(text||"").trim();
+  if(/^(leave|ignore|never mind|forget it|let it go)$/i.test(bareText) && !context?.pendingIntent){
+    return Interpretation.parse({intent:"UNKNOWN",entities:{cancelled:false},confidence:{intent:1},risk:"LOW",response:"Okay. I won’t change anything.",requiresConfirmation:false,needsClarification:false});
+  }
+  if(/\b(how much|what is|tell me)\b.*\b(due|outstanding|balance)\b/i.test(bareText) && context?.customerId){
+    return Interpretation.parse({intent:"CUSTOMER_BALANCE",entities:{customerId:context.customerId},confidence:{intent:.99,customer:.99},risk:"LOW",response:"I’ll check the current outstanding balance.",requiresConfirmation:false,needsClarification:false});
+  }
 
   // Gemini is the primary hosted AI provider in the free/demo build. It is intentionally
   // given a broad interpretation contract rather than a list of sentence templates.
@@ -129,67 +136,6 @@ export async function interpret(businessId:string,text:string,context?:{
   // must answer the pending question, never become a fresh unrelated AI request.
   const pendingEntities=context?.pendingEntities || null;
   const pendingIntent=context?.pendingIntent || null;
-
-  // Universal pending-action patching. A follow-up is allowed to fill or change
-  // fields of the action already being prepared instead of starting a new action.
-  // This is especially important for reminders, but the same merge semantics are
-  // intentionally generic so future entity types can use it too.
-  function reminderDateTimeFromText(input:string){
-    const t=String(input||'').trim().toLowerCase();
-    const now=new Date();
-    const tz='Asia/Kolkata';
-    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now);
-    const y=Number(parts.find(x=>x.type==='year')?.value||now.getFullYear());
-    const m=Number(parts.find(x=>x.type==='month')?.value||now.getMonth()+1);
-    const d=Number(parts.find(x=>x.type==='day')?.value||now.getDate());
-    let date:Date|null=null;
-    if(/\btoday\b|\bஇன்று\b|\bhoy\b|\baaj\b|\baajee\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d,0,0,0));
-    else if(/\btomorrow\b|\bநாளை\b|\bkal\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d+1,0,0,0));
-    const explicit=t.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?\b/);
-    if(explicit){ const yy=explicit[3]?Number(explicit[3].length===2?'20'+explicit[3]:explicit[3]):y; date=new Date(Date.UTC(yy,Number(explicit[2])-1,Number(explicit[1]),0,0,0)); }
-    const time=t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b/i);
-    if(!date && time && /\b(?:today|tomorrow|aaj|kal|இன்று|நாளை)\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d,0,0,0));
-    if(!date) return null;
-    let hh=0, mm=0;
-    if(time){
-      const rawH=Number(time[1]||time[4]); mm=Number(time[2]||time[5]||0); hh=rawH;
-      const ap=(time[3]||'').toLowerCase(); if(ap==='pm'&&hh<12)hh+=12; if(ap==='am'&&hh===12)hh=0;
-    }
-    // The server runs in UTC on many hosts. Interpret the spoken clock as IST.
-    return new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate(),hh-5,mm-30,0));
-  }
-  function patchPendingAction(input:string, base:any){
-    const e={...(base||{})};
-    const t=String(input||'').trim();
-    const low=t.toLowerCase();
-    if(String(base?.entityType||'').toUpperCase()==='REMINDER' || /\bremind(?:er| me)?\b/i.test(t)){
-      const due=reminderDateTimeFromText(t);
-      if(due) e.fields={...(e.fields||{}),dueAt:due.toISOString()};
-      const titleMatch=t.match(/\btitle\s*(?:is|=|:)?\s*(.+?)(?:\s+and\s+due(?:\s+date)?|\s+due\s+date|\s+due\s+time|$)/i);
-      if(titleMatch?.[1]) e.fields={...(e.fields||{}),title:titleMatch[1].trim().replace(/[.]+$/,'')};
-      const dateOnly=/\b(?:today|tomorrow|aaj|kal|இன்று|நாளை|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/i.test(t);
-      if(dateOnly && !e.fields?.dueAt) { const d=reminderDateTimeFromText(t); if(d)e.fields={...(e.fields||{}),dueAt:d.toISOString()}; }
-      if(!e.fields?.title){
-        const task=t.replace(/\b(?:today|tomorrow|aaj|kal|இன்று|நாளை)\b/ig,'').replace(/\b(?:is|are|was|the|due|date|time|and|title|at|on|for)\b/ig,' ').replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/ig,' ').replace(/\s+/g,' ').trim();
-        if(task && !/^yes$|^ok$|^confirm$/i.test(task)) e.fields={...(e.fields||{}),title:task};
-      }
-      if(e.fields?.title && !e.fields.notes && e.note) e.fields.notes=e.note;
-      e.name=e.fields?.title||e.name;
-      e.query=e.fields?.title||e.query;
-      e.operation='CREATE'; e.entityType='REMINDER';
-      return e;
-    }
-    return e;
-  }
-  if(pendingIntent && pendingEntities && !/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|no|nope|cancel|stop|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના)$/i.test(String(text).trim())){
-    const patched=patchPendingAction(text,pendingEntities);
-    if(String(patched.entityType||'').toUpperCase()==='REMINDER'){
-      const fields=patched.fields||{};
-      const missing=[]; if(!fields.title)missing.push('title'); if(!fields.dueAt)missing.push('due date/time');
-      if(missing.length===0) return Interpretation.parse({intent:'MANAGE_ENTITY',entities:patched,confidence:{intent:.99,fields:.99},risk:'MEDIUM',response:`I understood: create reminder “${fields.title}”${patched.fields?.notes?` for ${patched.fields.notes}`:''} for ${new Date(fields.dueAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})}. Should I do that?`,requiresConfirmation:true,needsClarification:false});
-      return Interpretation.parse({intent:'MANAGE_ENTITY',entities:patched,confidence:{intent:.99,fields:.85},risk:'MEDIUM',response:`I still need: ${missing.join(' and ')}.`,requiresConfirmation:false,needsClarification:true});
-    }
-  }
   // A newly spoken customer name must never inherit the previous customer from the
   // conversation. Contextual customerId is only for pronoun/follow-up messages.
   const looksLikeExplicitCustomer = (value:string) => {
@@ -277,7 +223,7 @@ You must:
 10. For informational questions, answer naturally from the business data request and do not create a mutation.
 11. If the request is casual/non-business, respond naturally without pretending it is a transaction.
 
-Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, MANAGE_ENTITY, UNKNOWN. MANAGE_ENTITY is the universal conversational CRUD intent for customers, products, suppliers, expenses and reminders. Use entities {operation:"CREATE|UPDATE|ARCHIVE|CANCEL|COMPLETE", entityType:"CUSTOMER|PRODUCT|SUPPLIER|EXPENSE|REMINDER|SALE|PURCHASE|PAYMENT", entityId, name, fields:{...}, query, matches}. Never invent entityId; resolve explicit names from live records or ask a clarification.
+Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, SETTLE_OUTSTANDING, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, CUSTOMER_TOP_TRANSACTIONS, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, MANAGE_ENTITY, UNKNOWN. MANAGE_ENTITY is the universal conversational CRUD intent for customers, products, suppliers, expenses and reminders. Use entities {operation:"CREATE|UPDATE|ARCHIVE|CANCEL|COMPLETE", entityType:"CUSTOMER|PRODUCT|SUPPLIER|EXPENSE|REMINDER|SALE|PURCHASE|PAYMENT", entityId, name, fields:{...}, query, matches}. Never invent entityId; resolve explicit names from live records or ask a clarification.
 
 For RECEIVE_PAYMENT, entities may include: customerName, customerQuery, customerId, amount, paymentMethod, currency, matches, customerResolution, proposedCustomerName, proposedCustomerAddress, createCustomer.
 For CREATE_SALE/CREATE_PURCHASE, entities may include items [{productName, productId, quantity, unitPrice}], customer/supplier fields, amount/payment, paymentMethod and notes. For MANAGE_ENTITY, preserve the user's intended operation and fields exactly; explicit names override old context, while pronouns may use pending context.
@@ -305,28 +251,6 @@ Conversation context: ${JSON.stringify(context||{})}`;
       parsed.confidence ||= {};
       parsed.needsClarification=Boolean(parsed.needsClarification);
 
-      // Generic field-level pending patch: preserve the original operation and
-      // merge only fields the new utterance actually supplies. This prevents a
-      // clarification such as “today is due date and title is biscuit reminder”
-      // from wiping the original reminder task, customer, product, amount, etc.
-      if(context?.pendingIntent && context.pendingEntities){
-        const affirmativeNow=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/i.test(String(text).trim());
-        const negativeNow=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ఇల్ల|ಇಲ್ಲ|ഇല്ല|ના)$/i.test(String(text).trim());
-        if(!affirmativeNow&&!negativeNow){
-          const base=context.pendingEntities as any;
-          const incoming=parsed.entities as any;
-          const merged:any={...base,...incoming};
-          if(base.fields||incoming.fields) merged.fields={...(base.fields||{}),...(incoming.fields||{})};
-          // Explicit entity identity in the newest turn wins; otherwise preserve
-          // the pending identity. Never resurrect an unrelated stale ID.
-          for(const k of ['customerId','productId','supplierId','entityId']){
-            if(incoming[k]===null||incoming[k]===undefined||incoming[k]==='') merged[k]=base[k];
-          }
-          parsed.entities=merged;
-          parsed.intent=context.pendingIntent;
-        }
-      }
-
       // Conversational confirmation/selection: carry the unresolved operation forward
       // so replies like "yes", "haan", "ஆம்" or "Jinal Adyar" are answers to the
       // question Hisab Flow just asked, not unrelated new messages.
@@ -348,6 +272,21 @@ Conversation context: ${JSON.stringify(context||{})}`;
           parsed.requiresConfirmation=false;
           parsed.response="Okay, I won't make that change.";
         }
+      }
+
+      // PATCH the persisted pending action field-by-field. A follow-up such as
+      // “today is the due date and title is biscuit reminder” must modify the
+      // existing reminder instead of starting a brand-new action.
+      if(context?.pendingIntent && context.pendingEntities && !affirmative && !negative){
+        const base:any={...(context.pendingEntities||{})};
+        const incoming:any=parsed.entities||{};
+        const merged:any={...base,...incoming};
+        if(base.fields || incoming.fields) merged.fields={...(base.fields||{}),...(incoming.fields||{})};
+        for(const k of ["customerId","customerName","customerQuery","productId","productName","supplierId","supplierName","amount","paidAmount","paymentMethod","items","notes","applyToOutstanding"]){
+          if(incoming[k]!==undefined && incoming[k]!==null && incoming[k]!=="") merged[k]=incoming[k];
+          else if(base[k]!==undefined) merged[k]=base[k];
+        }
+        parsed.intent=context.pendingIntent; parsed.entities=merged;
       }
 
       // Resolve/reconcile customer identity against the CURRENT explicit name. Never
@@ -438,8 +377,61 @@ Conversation context: ${JSON.stringify(context||{})}`;
         parsed.intent='CREATE_SALE';
       }
 
+      // FINAL SEMANTIC SAFETY GATE: protect the accounting engine from common
+      // high-impact misclassifications. This is not a user-facing command parser;
+      // it validates the model's proposal against the actual language.
+      const lowerText=String(text).trim().toLowerCase();
+      const readLead=/^(show|list|find|search|tell me|what|which|who|how much|give me|top|highest|lowest|compare|explain|why)\b/i.test(String(text).trim());
+      const paymentLanguage=/\b(paid|pay|payment|received|gave|sent|transferred|settled|cleared|paid back|paying|payment received|upi|cash paid)\b|\b(கொடுத்த|பணம்|செலுத்த|दिया|भुगतान|पैसे|भुगतान किया|દિયા)\b/i.test(lowerText);
+      const saleLanguageStrong=/\b(bought|buy|sold|sale|took|purchased|ordered|order|worth of|le liya|liya|vaangina|vangi|வாங்க|எடுத்த|खरीदा|लिया)\b/i.test(lowerText);
+      const dueLanguage=/\b(due|outstanding|balance|credit|udhaar|बाकी|बकाया|கடன்|பாக்கி)\b/i.test(lowerText);
+      const customerQueryFromText=String(parsed.entities.customerName||parsed.entities.customerQuery||parsed.entities.proposedCustomerName||'').trim();
+      const topMatch=lowerText.match(/\btop\s+(\d+)\b/);
+      if(/\b(how much|what is|tell me|show me)\b.*\b(due|outstanding|balance)\b/i.test(lowerText) && customerQueryFromText){
+        parsed.intent='CUSTOMER_BALANCE'; parsed.entities={...parsed.entities,customerName:customerQueryFromText,customerQuery:customerQueryFromText}; parsed.requiresConfirmation=false; parsed.needsClarification=false; parsed.risk='LOW'; parsed.response=`I’ll check ${customerQueryFromText}'s current outstanding balance.`;
+      } else if(topMatch && customerQueryFromText){
+        parsed.intent='CUSTOMER_TOP_TRANSACTIONS'; parsed.entities={...parsed.entities,customerName:customerQueryFromText,customerQuery:customerQueryFromText,limit:Math.min(50,Math.max(1,Number(topMatch[1]))),sort:'amount_desc'}; parsed.requiresConfirmation=false; parsed.needsClarification=false; parsed.risk='LOW'; parsed.response=`I’ll show the top ${topMatch[1]} highest-value transactions for ${customerQueryFromText}.`;
+      } else if(readLead && /^(CREATE_PURCHASE|CREATE_SALE|RECEIVE_PAYMENT|CREATE_EXPENSE|ADJUST_STOCK|MANAGE_ENTITY)$/.test(parsed.intent)){
+        if(/\bpurchases?\b/i.test(lowerText)) parsed.intent='SEARCH_BUSINESS';
+        else if(/\bsales?\b/i.test(lowerText)) parsed.intent='SEARCH_BUSINESS';
+        else parsed.intent='GENERAL_BUSINESS_QUERY';
+        parsed.requiresConfirmation=false; parsed.needsClarification=false; parsed.risk='LOW';
+        if(parsed.intent==='SEARCH_BUSINESS') parsed.entities={...parsed.entities,query:parsed.entities.query||lowerText,minAmount:parsed.entities.minAmount??amountFromText(text)};
+        parsed.response='I’ll search your recorded business data without changing anything.';
+      } else if(paymentLanguage && !saleLanguageStrong && parsed.intent==='CREATE_SALE'){
+        parsed.intent='RECEIVE_PAYMENT';
+        parsed.entities={...parsed.entities,amount:parsed.entities.amount??amountFromText(text),applyToOutstanding:true};
+      } else if(/\b(delete|remove|clear|settle|close)\b.*\b(due|outstanding|balance)\b/i.test(lowerText) && customerQueryFromText){
+        parsed.intent='SETTLE_OUTSTANDING';
+        parsed.entities={...parsed.entities,customerName:customerQueryFromText,customerQuery:customerQueryFromText,applyToOutstanding:true};
+        parsed.requiresConfirmation=true; parsed.needsClarification=false; parsed.risk='HIGH';
+        parsed.response=`I’ll settle ${customerQueryFromText}'s full outstanding balance using the amount currently due. This is a financial change. Confirm?`;
+      }
+
+      // Normalize calendar dates from model output. A bare DD Mon date belongs to
+      // the current business year unless the user explicitly supplied another year.
+      if(parsed.entities?.fields?.dueDate || parsed.entities?.fields?.dueAt){
+        const raw=String(parsed.entities.fields.dueAt||parsed.entities.fields.dueDate||'');
+        const userDate=String(text).match(/\b(\d{1,2})\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b(?:\s*(\d{4}))?(?:[^0-9]*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i);
+        const explicitYear=userDate?.[3]!=null;
+        if(userDate){
+          const months=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']; const month=months.indexOf(userDate[2].toLowerCase());
+          let hh=userDate[4]?Number(userDate[4]):0; const mm=userDate[5]?Number(userDate[5]):0; const ap=(userDate[6]||'').toLowerCase(); if(ap==='pm'&&hh<12)hh+=12; if(ap==='am'&&hh===12)hh=0;
+          const y=explicitYear?Number(userDate[3]):new Date().getFullYear();
+          if(month>=0) { const iso=new Date(y,month,Number(userDate[1]),Math.min(23,hh),Math.min(59,mm),0,0).toISOString(); parsed.entities.fields.dueAt=iso; delete parsed.entities.fields.dueDate; }
+        } else if(!/\b20\d{2}\b/.test(raw)){
+          parsed.entities.fields.dueAt=new Date().toISOString(); delete parsed.entities.fields.dueDate;
+        }
+      }
+
+      // Never interpret an amount-only phrase as a new sale when the current
+      // conversation is about payment. An isolated number inherits payment context.
+      if(/^\s*(?:₹|rs\.?|inr\s*)?\d[\d,.]*(?:\s*k)?\s*$/i.test(String(text)) && context?.lastIntent==='RECEIVE_PAYMENT' && context?.customerId){
+        parsed.intent='RECEIVE_PAYMENT'; parsed.entities={...context.pendingEntities,...parsed.entities,customerId:context.customerId,amount:amountFromText(text),applyToOutstanding:true}; parsed.requiresConfirmation=true; parsed.needsClarification=false; parsed.risk='MEDIUM';
+      }
+
       // Conversational confirmations are always treated as financial confirmation, not a new action.
-      const mutationIntents=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK","MANAGE_ENTITY"];
+      const mutationIntents=["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK","MANAGE_ENTITY"];
       if(mutationIntents.includes(parsed.intent)){
         const e=parsed.entities||{};
         if(parsed.intent==="RECEIVE_PAYMENT") {
