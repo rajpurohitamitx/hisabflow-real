@@ -134,3 +134,19 @@ These are not represented as fake working buttons:
 - Advanced forecasting/ML service
 
 The database and service boundaries are designed so those systems can be added without rewriting accounting logic.
+
+## Hi Hisab voice-first mode
+
+Hisab Flow now includes a persistent voice assistant in the authenticated app shell. After the user activates **Hi Hisab**, the assistant:
+
+- keeps the voice session active while the app is open;
+- records short speech turns with browser MediaRecorder and sends them to Gemini 3.5 Transcribe;
+- automatically listens again after clarification questions and voice confirmations;
+- treats `yes`, `go ahead`, Hindi/Tamil/etc. equivalents, and customer/location replies as answers to the current pending question;
+- resolves customers/products against tenant-scoped business data before financial actions;
+- executes low-risk read actions automatically;
+- requires one spoken confirmation for financial mutations;
+- keeps keyboard, Enter, mouse and touch controls available as fallback;
+- supports the wake phrase `Hi Hisab` through the browser speech-recognition wake listener when the browser supports it.
+
+The browser wake listener is intentionally limited to the open web app. A true system-wide background wake word requires a native Android/iOS implementation with OS-level background microphone permissions.

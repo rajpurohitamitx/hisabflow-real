@@ -109,54 +109,65 @@ export async function POST(req: Request) {
       throw new Error("Gemini uploaded the recording but did not return a file URI.");
     }
 
-    const generationConfig: any = {
-      audioTranscriptionConfig: {
-        mode: "SMART",
-        customVocabulary: vocabulary,
-        ...(languageCode ? { languageCodes: [languageCode] } : { languageCodes: [] }),
-      },
+    // Gemini 3.5 Transcribe uses the Interactions API for file transcription.
+    // Do NOT send this audio through generateContent/audioTranscriptionConfig:
+    // that older path can accept the file but return no transcript.
+    const model = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
+    const transcriptionConfig: Record<string, unknown> = {
+      mode: "smart",
+      custom_vocabulary: vocabulary,
+      language_codes: languageCode ? [languageCode] : [],
     };
 
-    const model = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    const interactionResponse = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/interactions",
       {
         method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": key },
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": key,
+        },
         body: JSON.stringify({
-          contents: [
+          model,
+          input: [
             {
-              parts: [
-                {
-                  fileData: {
-                    fileUri,
-                    mimeType: uploadedMimeType,
-                  },
-                },
-              ],
+              type: "audio",
+              uri: fileUri,
+              mime_type: uploadedMimeType,
             },
           ],
-          generationConfig,
+          generation_config: {
+            transcription_config: transcriptionConfig,
+          },
         }),
         cache: "no-store",
       },
     );
 
-    const data = await response.json();
-    if (!response.ok) {
-      const message = data?.error?.message || `Gemini transcription failed (${response.status}).`;
+    const interactionData = await interactionResponse.json().catch(() => ({}));
+    if (!interactionResponse.ok) {
+      const message = interactionData?.error?.message ||
+        `Gemini transcription failed (${interactionResponse.status}).`;
       throw new Error(message);
     }
 
-    const text = String(
-      data?.candidates?.[0]?.content?.parts
-        ?.map((part: any) => part?.text || "")
-        ?.join(" ") || data?.text || ""
-    ).trim();
+    // Interactions API exposes the transcript as output_text. Keep a defensive
+    // fallback for response shapes so a minor API response wrapper change does
+    // not turn a valid transcript into the misleading "no transcription" error.
+    const outputText =
+      interactionData?.output_text ||
+      interactionData?.response?.output_text ||
+      interactionData?.output?.text ||
+      interactionData?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part?.text || "")
+        ?.join(" ") ||
+      "";
+
+    const text = String(outputText).trim();
 
     if (!text) {
       throw new Error(
-        "Gemini processed the audio but returned no transcription. Please try a clear 1–15 second recording."
+        "Gemini received the audio but returned an empty transcript. Check microphone permission and try a clear 1–15 second recording."
       );
     }
 

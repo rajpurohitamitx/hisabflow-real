@@ -21,6 +21,7 @@
     "test:e2e": "playwright test",
     "test:db": "tsx scripts/smoke-db.ts",
     "test:openai": "node scripts/smoke-openai.mjs",
+    "validate:ultra-voice": "node scripts/validate-ultra-voice.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

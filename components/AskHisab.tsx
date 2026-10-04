@@ -33,7 +33,7 @@ export default function AskHisab(){
      const result=d.result;const answer=result.response||'I understood the request.';
      setMsgs(m=>[...m,{role:'assistant',text:answer}]);
      const needsFollowup=Boolean(result.needsClarification||result.requiresConfirmation||result.risk!=='LOW');
-     const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા)\b/i.test(clean);
+     const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા)\b/i.test(clean);
      const resolvingNewCustomer=Boolean(pendingOverride?.entities?.customerResolution==='CREATE_OR_CONFIRM' && affirmative && result?.entities?.createCustomer && (result?.entities?.customerName||result?.entities?.proposedCustomerName));
      const confirmingExistingAction=Boolean(pendingOverride && affirmative && !pendingOverride.entities?.customerResolution && result?.intent && result.intent!=='UNKNOWN' && !result.needsClarification);
      if(needsFollowup) setPending({actionId:d.actionId,result});

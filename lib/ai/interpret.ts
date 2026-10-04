@@ -13,6 +13,7 @@ export const Interpretation = z.object({
   risk: z.enum(["LOW","MEDIUM","HIGH"]),
   response: z.string().optional(),
   requiresConfirmation: z.boolean().default(false),
+  needsClarification: z.boolean().default(false),
 });
 export type Interpretation = z.infer<typeof Interpretation>;
 
@@ -48,6 +49,44 @@ export async function interpret(businessId:string,text:string,context?:{
   // Gemini is the primary hosted AI provider in the free/demo build. It is intentionally
   // given a broad interpretation contract rather than a list of sentence templates.
   // The deterministic parser below is only a safety fallback when no AI provider exists.
+  // Resolve conversational replies BEFORE calling the model. A bare “yes/haan/ஆம்”
+  // must answer the pending question, never become a fresh unrelated AI request.
+  const pendingEntities=context?.pendingEntities || null;
+  const pendingIntent=context?.pendingIntent || null;
+  const normalizedReply=normalize(text);
+  const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)\b/i.test(text.trim());
+  const negative=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇല്ല|ના)\b/i.test(text.trim());
+  if(pendingIntent && pendingEntities && (affirmative || negative)){
+    if(negative) return Interpretation.parse({intent:"UNKNOWN",entities:{cancelled:true},confidence:{intent:1},risk:"LOW",response:"Okay, I won't make that change.",requiresConfirmation:false,needsClarification:false});
+    const entities={...pendingEntities};
+    if(entities.customerResolution==="CREATE_OR_CONFIRM" || entities.proposedCustomerName) entities.createCustomer=true;
+    return Interpretation.parse({
+      intent:pendingIntent, entities, confidence:{intent:1,entities:1},
+      risk:pendingIntent==="GENERAL_BUSINESS_QUERY"||pendingIntent==="LOW_STOCK"||pendingIntent==="DAILY_BRIEFING"?"LOW":"MEDIUM",
+      response:entities.createCustomer && entities.proposedCustomerName ? `Add ${entities.proposedCustomerName} and record this action?` : "Confirmed. I’m ready to apply this action.",
+      requiresConfirmation:true, needsClarification:false
+    });
+  }
+
+  // If the user supplies a name/address while resolving a missing customer, keep the
+  // original financial operation and use the reply as the entity-resolution answer.
+  if(pendingIntent && pendingEntities && pendingEntities.customerResolution==="CREATE_OR_CONFIRM" && !affirmative && !negative){
+    const candidate=text.trim();
+    if(candidate){
+      const r=await resolveCustomer(businessId,candidate);
+      const entities={...pendingEntities};
+      if(r.selected){
+        entities.customerId=r.selected.id; entities.customerName=r.selected.name; entities.customerResolution="RESOLVED"; entities.matches=[{id:r.selected.id,name:r.selected.name,phone:r.selected.phone}];
+        return Interpretation.parse({intent:pendingIntent,entities,confidence:{intent:.99,customer:.99},risk:"MEDIUM",response:`I found ${r.selected.name}. Please confirm this action.`,requiresConfirmation:true,needsClarification:false});
+      }
+      entities.proposedCustomerName=candidate.split(/[,|-]/)[0].trim() || candidate;
+      const address=candidate.split(/[,|-]/).slice(1).join(",").trim();
+      if(address) entities.proposedCustomerAddress=address;
+      entities.createCustomer=true; entities.customerResolution="CREATE_OR_CONFIRM";
+      return Interpretation.parse({intent:pendingIntent,entities,confidence:{intent:.98,customer:.85},risk:"MEDIUM",response:`I’ll use ${entities.proposedCustomerName}${address?` at ${address}`:""}. Please confirm to continue.`,requiresConfirmation:true,needsClarification:false});
+    }
+  }
+
   if(isLocalAIEnabled() || isGeminiEnabled() || process.env.OPENAI_API_KEY){
     try {
       const systemPrompt=`You are the universal natural-language interpretation layer for Hisab Flow, an AI business operating assistant for Indian small businesses.
@@ -60,17 +99,17 @@ You must:
 3. Preserve the semantic meaning of Indian number expressions: 200, 2 000, 2,000, two thousand, दो सौ, दो हजार, இருநூறு, 2k, 20k, etc. Do not confuse 2,000 with 2.
 4. Resolve entities conservatively using the live business records supplied by the application. Never invent IDs.
 5. If exactly one entity is a clear match, return its name/query so the server can resolve it. If multiple are plausible, return all useful candidates and ask the user to choose. If none exists and the user appears to refer to a person/customer, set customerResolution to CREATE_OR_CONFIRM and ask whether a new customer should be added.
-6. Understand follow-up answers such as "yes", "no", "Jinal Adyar", "the second one", "haan", "ஆம்", "yes add her", etc. Use pending conversation context.
+6. Understand follow-up answers such as "yes", "no", "Jinal Adyar", "the second one", "haan", "ஆம்", "yes add her", "show me", and "where is it". A short follow-up refers to the pending question or immediately previous business question unless the user clearly starts a new topic. Use pending conversation context and recent history.
 7. Ask the smallest possible clarification question when required information is missing. Never guess a financial value, person or product.
 8. For a financial mutation, require confirmation after all required entities/values are resolved. Confirmation can be answered by voice or text.
 9. For informational questions, answer naturally from the business data request and do not create a mutation.
 10. If the request is casual/non-business, respond naturally without pretending it is a transaction.
 
-Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, UNKNOWN.
+Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, UNKNOWN.
 
 For RECEIVE_PAYMENT, entities may include: customerName, customerQuery, customerId, amount, paymentMethod, currency, matches, customerResolution, proposedCustomerName, proposedCustomerAddress, createCustomer.
 For CREATE_SALE/CREATE_PURCHASE, entities may include items [{productName, productId, quantity, unitPrice}], customer/supplier fields, amount/payment, paymentMethod and notes.
-For GENERAL_BUSINESS_QUERY, put the user's question in query and describe any useful filters/date ranges.
+For GENERAL_BUSINESS_QUERY, put the user's question in query and describe any useful filters/date ranges. For purchase/sales searches, include minAmount/maxAmount when the user asks for an amount threshold. Use SALES_ANALYSIS for questions such as “why did sales change”, “what caused sales to drop/grow”, or comparisons across periods.
 
 Return ONLY valid JSON with this exact top-level shape:
 {"intent":"string","entities":{},"confidence":{},"risk":"LOW|MEDIUM|HIGH","response":"string","requiresConfirmation":false,"needsClarification":false}
@@ -93,6 +132,7 @@ Conversation context: ${JSON.stringify(context||{})}`;
       parsed.entities ||= {};
       parsed.confidence ||= {};
       parsed.needsClarification=Boolean(parsed.needsClarification);
+      if(context?.pendingIntent && context.pendingEntities && !parsed.needsClarification && (affirmative || negative)){ /* server-side pending handling above is authoritative */ }
 
       // Conversational confirmation/selection: carry the unresolved operation forward
       // so replies like "yes", "haan", "ஆம்" or "Jinal Adyar" are answers to the

@@ -55,10 +55,32 @@ export async function POST(req:Request){
         {const rows=await db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{id:true,name:true,phone:true},take:100});const enriched=await Promise.all(rows.map(async c=>({ ...c, outstanding:Number(await customerBalance(s.businessId,c.id)) })));const customers=enriched.filter(x=>x.outstanding>0).sort((a,b)=>b.outstanding-a.outstanding).slice(0,25);result={message:customers.length?`${customers.length} customers have outstanding balances.`:"No customer balances are currently outstanding.",customers};} break;
       case "SUPPLIER_DUES":
         {const rows=await db.supplier.findMany({where:{businessId:s.businessId,archived:false},select:{id:true,name:true,phone:true},take:100});const suppliers=await Promise.all(rows.map(async x=>{const [p,paid]=await Promise.all([db.purchase.aggregate({where:{businessId:s.businessId,supplierId:x.id},_sum:{total:true}}),db.payment.aggregate({where:{businessId:s.businessId,supplierId:x.id,kind:"SUPPLIER_PAYMENT"},_sum:{amount:true}})]);return {...x,outstanding:Number(p._sum.total||0)-Number(paid._sum.amount||0)}}));result={message:"Supplier balances calculated from recorded purchases and payments.",suppliers:suppliers.filter(x=>x.outstanding>0).sort((a,b)=>b.outstanding-a.outstanding)};} break;
+      case "SALES_ANALYSIS": {
+        const now=new Date();
+        const startThis=new Date(now.getFullYear(),now.getMonth(),1);
+        const startPrev=new Date(now.getFullYear(),now.getMonth()-1,1);
+        const endPrev=startThis;
+        const [current,previous,currentCount,previousCount,recent]=await Promise.all([
+          db.sale.aggregate({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:startThis,lte:now}},_sum:{total:true}}),
+          db.sale.aggregate({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:startPrev,lt:endPrev}},_sum:{total:true}}),
+          db.sale.count({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:startThis,lte:now}}}),
+          db.sale.count({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:startPrev,lt:endPrev}}}),
+          db.sale.findMany({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:startThis,lte:now}},include:{items:{include:{product:true}},customer:{select:{name:true}}},orderBy:{occurredAt:"desc"},take:200})
+        ]);
+        const cur=Number(current._sum.total||0), prev=Number(previous._sum.total||0);
+        const change=cur-prev, pct=prev?((change/prev)*100):null;
+        const productMap=new Map<string,{name:string,revenue:number,quantity:number}>();
+        for(const sale of recent){ for(const item of sale.items){ const name=item.nameSnapshot||item.product?.name||"Unknown product"; const row=productMap.get(name)||{name,revenue:0,quantity:0}; row.revenue+=Number(item.lineTotal||0); row.quantity+=Number(item.quantity||0); productMap.set(name,row); } }
+        const topProducts=[...productMap.values()].sort((a,b)=>b.revenue-a.revenue).slice(0,5);
+        const direction=change>0?"increased":change<0?"decreased":"did not change";
+        const pctText=pct===null?"there is no previous-month baseline":"that is "+Math.abs(pct).toFixed(1)+"% "+(change>0?"higher":change<0?"lower":"than");
+        result={message:`Sales this month are ${money(cur)} across ${currentCount} invoices, versus ${money(prev)} across ${previousCount} invoices last month. Sales ${direction} by ${money(Math.abs(change))}; ${pctText}.`,currentSales:cur,previousSales:prev,change,pct,currentCount,previousCount,topProducts};
+        break;
+      }
       case "PROFIT_SUMMARY":
         {const [sales,purchases,expenses]=await Promise.all([db.sale.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.purchase.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.expense.aggregate({where:{businessId:s.businessId},_sum:{amount:true}})]);const revenue=Number(sales._sum.total||0),cost=Number(purchases._sum.total||0),expense=Number(expenses._sum.amount||0);result={message:`Recorded revenue is ${money(revenue)}, purchases are ${money(cost)}, expenses are ${money(expense)} and the simple operating difference is ${money(revenue-cost-expense)}.`,revenue,purchases:cost,expenses:expense,operatingDifference:revenue-cost-expense};} break;
       case "SEARCH_BUSINESS":
-        {const q=String(e.query||"");const [customers,products,sales,purchases]=await Promise.all([db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.product.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.sale.findMany({where:{businessId:s.businessId,invoiceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}}),db.purchase.findMany({where:{businessId:s.businessId,referenceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}})]);result={message:`Search completed for “${q}”.`,customers,products,sales,purchases};} break;
+        {const q=String(e.query||"");const minAmount=e.minAmount!=null?Number(e.minAmount):null;const maxAmount=e.maxAmount!=null?Number(e.maxAmount):null;const purchaseWhere:any={businessId:s.businessId,referenceNumber:q?{contains:q,mode:"insensitive"}:undefined};const [customers,products,sales,purchases]=await Promise.all([db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.product.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.sale.findMany({where:{businessId:s.businessId,invoiceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}}),db.purchase.findMany({where:purchaseWhere,include:{supplier:{select:{name:true}},items:{include:{product:true}}},take:50,orderBy:{occurredAt:"desc"}})]);const filteredPurchases=purchases.filter((x:any)=>(minAmount==null||Number(x.total)>=minAmount)&&(maxAmount==null||Number(x.total)<=maxAmount));result={message:`Search completed for “${q}”.`,customers,products,sales,purchases:filteredPurchases};} break;
       case "GENERAL_BUSINESS_QUERY": {
         const d=await dashboardSummary(s.businessId);
         if(isGeminiEnabled()){
@@ -66,10 +88,10 @@ export async function POST(req:Request){
             db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{name:true,phone:true},take:100}),
             db.product.findMany({where:{businessId:s.businessId,archived:false},select:{name:true,stock:true,reorderPoint:true},take:100}),
             db.sale.findMany({where:{businessId:s.businessId,status:"CONFIRMED"},select:{occurredAt:true,total:true,customer:{select:{name:true}}},orderBy:{occurredAt:"desc"},take:50}),
-            db.purchase.findMany({where:{businessId:s.businessId,status:"CONFIRMED"},select:{occurredAt:true,total:true,supplier:{select:{name:true}}},orderBy:{occurredAt:"desc"},take:50}),
+            db.purchase.findMany({where:{businessId:s.businessId,status:"CONFIRMED"},include:{supplier:{select:{name:true}},items:{select:{nameSnapshot:true,quantity:true,rate:true,lineTotal:true,product:{select:{name:true,sku:true}}}}},orderBy:{occurredAt:"desc"},take:100}),
             db.expense.findMany({where:{businessId:s.businessId},select:{occurredAt:true,amount:true,category:true},orderBy:{occurredAt:"desc"},take:50}),
           ]);
-          const answer=await geminiJson([{role:"user",content:`You are Hisab Flow's business answer layer. Answer the user's question naturally and concisely using ONLY the supplied live business context. Do not invent facts. If the data is insufficient, say what is missing. User question: ${String(e.query||"")}\nLive dashboard: ${JSON.stringify(d)}\nRecent customers: ${JSON.stringify(customers)}\nProducts/stock: ${JSON.stringify(products)}\nRecent sales: ${JSON.stringify(sales)}\nRecent purchases: ${JSON.stringify(purchases)}\nRecent expenses: ${JSON.stringify(expenses)}\nReturn JSON: {"message":"string"}`}]);
+          const answer=await geminiJson([{role:"user",content:`You are Hisab Flow's business answer layer. Answer the user's question naturally and concisely using ONLY the supplied live business context. Do not invent facts. If the data is insufficient, say what is missing. User question: ${String(e.query||"")}\nLive dashboard: ${JSON.stringify(d)}\nRecent customers: ${JSON.stringify(customers)}\nProducts/stock: ${JSON.stringify(products)}\nRecent sales: ${JSON.stringify(sales)}\nRecent purchases: ${JSON.stringify(purchases)}\nIf the question asks for purchases above/below an amount, filter the supplied purchase records by their total or matching item amounts before answering. If it asks for a purchase order for a product, inspect purchase items and return reference number, date, supplier and matching items.\nRecent expenses: ${JSON.stringify(expenses)}\nReturn JSON: {"message":"string"}`}]);
           result={message:String(answer?.message||"I found the relevant business data, but I couldn't summarize it yet.")};
         } else result={message:`Current recorded sales are ${money(d.sales)} and outstanding is ${money(d.outstanding)}.`};
         break;
