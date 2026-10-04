@@ -37,8 +37,8 @@ export async function POST(req: Request) {
     const vocabulary = Array.from(new Set([
       ...customers.map((x: { name: string }) => x.name),
       ...products.flatMap((x: { name: string; sku: string | null }) => [x.name, x.sku].filter(Boolean) as string[]),
-      ...memories.flatMap((x: { key: string; value: string }) => [x.key, x.value].filter(Boolean) as string[]),
-      ...aliases.flatMap((x: { value: string; normalized: string }) => [x.value, x.normalized].filter(Boolean)) ,
+      ...memories.flatMap((x: { key: string; value: unknown }) => [x.key, typeof x.value === "string" ? x.value : ""].filter(Boolean)),
+      ...aliases.flatMap((x: { value: string; normalized: string }) => [x.value, x.normalized].filter(Boolean)),
       "Hisab Flow", "rupees", "INR", "cash", "UPI", "credit", "balance", "bill", "invoice", "sale", "purchase", "payment", "stock", "chain", "ring",
     ])).filter(x => x && x.length > 1).slice(0, 1000);
 
