@@ -41,9 +41,9 @@ export async function POST(req:Request){
     const e=action.entities as any; let result:any;
     // Resolve the customer from the action's CURRENT explicit name before every
     // customer-sensitive operation. This blocks stale conversation IDs.
-    const allowCustomerCreate=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_REMINDER"].includes(action.intent);
+    const allowCustomerCreate=["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_REMINDER","CUSTOMER_BALANCE","CUSTOMER_STATEMENT","CUSTOMER_TOP_TRANSACTIONS"].includes(action.intent);
     const boundCustomer=await bindCustomer(s.businessId,e,allowCustomerCreate);
-    if((boundCustomer as any).error && ["RECEIVE_PAYMENT","CREATE_SALE","CUSTOMER_STATEMENT","CUSTOMER_BALANCE","CREATE_REMINDER","DELETE_CUSTOMER"].includes(action.intent)) return NextResponse.json(boundCustomer,{status:409});
+    if((boundCustomer as any).error && ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CUSTOMER_STATEMENT","CUSTOMER_BALANCE","CUSTOMER_TOP_TRANSACTIONS","CREATE_REMINDER","DELETE_CUSTOMER"].includes(action.intent)) return NextResponse.json(boundCustomer,{status:409});
     if((boundCustomer as any).customerId){ e.customerId=(boundCustomer as any).customerId; e.customerName=(boundCustomer as any).customerName; }
     if(action.intent === "MANAGE_ENTITY") {
       const op=String(e.operation||"UPDATE").toUpperCase();
@@ -107,6 +107,15 @@ export async function POST(req:Request){
         result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai",applyToOutstanding:Boolean(e.applyToOutstanding)});
         result={message:`${money(e.amount)} received from ${customerName||"customer"}.`,payment:result,customerId,customerName}; break;
       }
+      case "SETTLE_OUTSTANDING": {
+        const customerId=e.customerId as string|undefined;
+        const customerName=String(e.customerName||"").trim();
+        if(!customerId) return NextResponse.json({error:"Which customer should I settle?",requiresCustomer:true,matches:e.matches||[]},{status:409});
+        const due=Number(await customerBalance(s.businessId,customerId));
+        if(due<=0) { result={message:`${customerName||"Customer"} has no outstanding balance.`}; break; }
+        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:due,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai",applyToOutstanding:true});
+        result={message:`${money(due)} outstanding for ${customerName||"customer"} has been settled.`,payment:result,customerId,customerName}; break;
+      }
       case "DELETE_CUSTOMER": {
         if(!e.customerId) return NextResponse.json({error:"Which customer should be archived?",requiresCustomer:true,matches:e.matches||[]},{status:409});
         const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId,archived:false}});
@@ -115,20 +124,24 @@ export async function POST(req:Request){
         result={message:`${archived.name} has been archived. Historical sales and payments were kept intact.`,customer:archived};
         break;
       }
-      case "CREATE_REMINDER": {
-        const due=e.dueAt||e.fields?.dueAt;
-        const title=String(e.title||e.fields?.title||"Customer follow-up").trim();
-        if(!title||!due) return NextResponse.json({error:"Reminder needs a title and due date/time."},{status:409});
-        const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId||null,title,dueAt:new Date(due),channel:String(e.channel||e.fields?.channel||"in_app"),notes:e.notes||e.fields?.notes||null}});
-        result={message:`Reminder “${title}” created for ${new Date(due).toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"medium",timeStyle:"short"})}.`,reminder:r};
+      case "CREATE_REMINDER":
+        {const fields=(e.fields&&typeof e.fields==='object')?e.fields:{}; const title=String(fields.title||e.title||e.notes||"Reminder").trim(); const rawDue=fields.dueAt||fields.dueDate||e.dueAt||e.dueDate; if(!title) return NextResponse.json({error:"Reminder needs a title."},{status:409}); if(!rawDue) return NextResponse.json({error:"Reminder needs a due date."},{status:409}); const due=new Date(rawDue); if(Number.isNaN(due.getTime())) return NextResponse.json({error:"I couldn't understand that reminder date/time."},{status:409}); const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId||null,title,dueAt:due,channel:String(fields.channel||e.channel||"in_app"),notes:fields.notes||e.notes||null}});result={message:`Reminder “${title}” created for ${due.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}.`,reminder:r};}
         break;
-      }
       case "CUSTOMER_STATEMENT":
         {if(!e.customerId)return NextResponse.json({error:"Which customer do you mean?",requiresCustomer:true,matches:e.matches||[]},{status:409});const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));result={message:`Statement prepared for ${customer.name}.`,customer:customer.name,statement};}
         break;
       case "CREATE_EXPENSE":
         result=await createExpense({businessId:s.businessId,userId:s.user.id,category:e.category||"General",amount:e.amount,description:e.description,source:"ai"});
         result={message:`Expense of ${money(e.amount)} recorded.`,expense:result}; break;
+      case "CUSTOMER_TOP_TRANSACTIONS": {
+        if(!e.customerId) return NextResponse.json({error:"Which customer do you mean?",matches:e.matches||[]},{status:409});
+        const limit=Math.min(50,Math.max(1,Number(e.limit||10)));
+        const rows=await db.sale.findMany({where:{businessId:s.businessId,customerId:e.customerId,status:"CONFIRMED"},include:{items:true},orderBy:{total:"desc"},take:limit});
+        const transactions=rows.map((x:any)=>({id:x.id,invoiceNumber:x.invoiceNumber,date:x.occurredAt,total:Number(x.total),amountPaid:Number(x.amountPaid),balanceDue:Number(x.balanceDue),items:x.items.map((i:any)=>({product:i.nameSnapshot,quantity:Number(i.quantity),rate:Number(i.rate),total:Number(i.lineTotal)}))}));
+        const lines=transactions.map((x:any,i:number)=>`${i+1}. ${x.invoiceNumber} — ${money(x.total)}${x.balanceDue>0?` (due ${money(x.balanceDue)})`:""}`).join("\n");
+        result={message:`Top ${transactions.length} highest-value transactions for ${e.customerName||"the customer"}:\n${lines||"No transactions found."}`,customer:e.customerName||null,transactions};
+        break;
+      }
       case "CUSTOMER_BALANCE":
         if(!e.customerId) return NextResponse.json({error:"Which customer do you mean?",matches:e.matches||[]},{status:409});
         result={message:`${e.customerName||"Customer"} outstanding is ${money(await customerBalance(s.businessId,e.customerId))}.`}; break;
@@ -167,7 +180,8 @@ export async function POST(req:Request){
       case "PROFIT_SUMMARY":
         {const [sales,purchases,expenses]=await Promise.all([db.sale.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.purchase.aggregate({where:{businessId:s.businessId,status:"CONFIRMED"},_sum:{total:true}}),db.expense.aggregate({where:{businessId:s.businessId},_sum:{amount:true}})]);const revenue=Number(sales._sum.total||0),cost=Number(purchases._sum.total||0),expense=Number(expenses._sum.amount||0);result={message:`Recorded revenue is ${money(revenue)}, purchases are ${money(cost)}, expenses are ${money(expense)} and the simple operating difference is ${money(revenue-cost-expense)}.`,revenue,purchases:cost,expenses:expense,operatingDifference:revenue-cost-expense};} break;
       case "SEARCH_BUSINESS":
-        {const q=String(e.query||"");const minAmount=e.minAmount!=null?Number(e.minAmount):null;const maxAmount=e.maxAmount!=null?Number(e.maxAmount):null;const purchaseWhere:any={businessId:s.businessId,referenceNumber:q?{contains:q,mode:"insensitive"}:undefined};const [customers,products,sales,purchases]=await Promise.all([db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.product.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.sale.findMany({where:{businessId:s.businessId,invoiceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}}),db.purchase.findMany({where:purchaseWhere,include:{supplier:{select:{name:true}},items:{include:{product:true}}},take:50,orderBy:{occurredAt:"desc"}})]);const filteredPurchases=purchases.filter((x:any)=>(minAmount==null||Number(x.total)>=minAmount)&&(maxAmount==null||Number(x.total)<=maxAmount));result={message:`Search completed for “${q}”.`,customers,products,sales,purchases:filteredPurchases};} break;
+        {const q=String(e.query||"");const minAmount=e.minAmount!=null?Number(e.minAmount):null;const maxAmount=e.maxAmount!=null?Number(e.maxAmount):null;const purchaseWhere:any={businessId:s.businessId,...(q&&!minAmount&&!maxAmount?{referenceNumber:{contains:q,mode:"insensitive"}}:{})};const [customers,products,sales,purchases]=await Promise.all([db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.product.findMany({where:{businessId:s.businessId,archived:false,name:{contains:q,mode:"insensitive"}},take:10}),db.sale.findMany({where:{businessId:s.businessId,invoiceNumber:{contains:q,mode:"insensitive"}},take:10,orderBy:{occurredAt:"desc"}}),db.purchase.findMany({where:purchaseWhere,include:{supplier:{select:{name:true}},items:{include:{product:true}}},take:50,orderBy:{occurredAt:"desc"}})]);const filteredPurchases=purchases.filter((x:any)=>(minAmount==null||Number(x.total)>=minAmount)&&(maxAmount==null||Number(x.total)<=maxAmount));const purchaseLines=filteredPurchases.slice(0,10).map((x:any,i:number)=>`${i+1}. ${x.referenceNumber||x.id.slice(-8)} — ${money(Number(x.total))}${x.supplier?.name?` from ${x.supplier.name}`:""}`).join("\n");
+          result={message:filteredPurchases.length?`Found ${filteredPurchases.length} purchase(s)${minAmount!=null?` at or above ${money(minAmount)}`:""}:\n${purchaseLines}`:`No purchases matched${minAmount!=null?` the ${money(minAmount)} threshold`:""}.`,customers,products,sales,purchases:filteredPurchases};} break;
       case "GENERAL_BUSINESS_QUERY": {
         const d=await dashboardSummary(s.businessId);
         if(isGeminiEnabled()){
@@ -188,13 +202,13 @@ export async function POST(req:Request){
         const customerId=e.customerId as string|undefined;
         const customerName=String(e.customerName||"").trim();
         if(!customerId) return NextResponse.json({error:"Which customer is this sale for? I won't save this as a walk-in sale.",requiresCustomer:true,proposedCustomerName:e.proposedCustomerName},{status:409});
-        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
+        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:customerId||undefined,items:e.items,payment:e.payment!=null?e.payment:Number(e.paidAmount||0),paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
         result={message:`Sale ${result.invoiceNumber} created for ${money(result.total)}${customerName?` for ${customerName}`:""}. Outstanding: ${money(result.balanceDue)}.`,sale:result,customerId,customerName};
         break;
       }
       case "CREATE_PURCHASE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the purchase, but need the product and quantity.",needsDetails:true},{status:409});
-        result=await createPurchase({businessId:s.businessId,userId:s.user.id,supplierId:e.supplierId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,source:"ai"});
+        result=await createPurchase({businessId:s.businessId,userId:s.user.id,supplierId:e.supplierId||undefined,items:e.items,payment:e.payment!=null?e.payment:Number(e.paidAmount||0),paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,source:"ai"});
         result={message:`Purchase ${result.referenceNumber} recorded for ${money(result.total)}.`,purchase:result};
         break;
       }
