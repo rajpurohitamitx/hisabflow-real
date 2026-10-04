@@ -30,7 +30,7 @@ export async function POST(req:Request){
           }
         }
         if(!customerId) return NextResponse.json({error:"Which customer should receive this payment?",requiresCustomer:true,matches:e.matches||[],canCreateCustomer:Boolean(e.proposedCustomerName)},{status:409});
-        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:e.paymentMethod||"CASH",source:"ai"});
+        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai"});
         result={message:`${money(e.amount)} received from ${customerName||"customer"}.`,payment:result,customerId,customerName}; break;
       }
       case "CREATE_REMINDER":
@@ -98,13 +98,13 @@ export async function POST(req:Request){
       }
       case "CREATE_SALE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the sale, but need the product and quantity.",needsDetails:true},{status:409});
-        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:e.customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:e.paymentMethod||"CASH",occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
+        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:e.customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
         result={message:`Sale ${result.invoiceNumber} created for ${money(result.total)}. Outstanding: ${money(result.balanceDue)}.`,sale:result};
         break;
       }
       case "CREATE_PURCHASE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the purchase, but need the product and quantity.",needsDetails:true},{status:409});
-        result=await createPurchase({businessId:s.businessId,userId:s.user.id,supplierId:e.supplierId||undefined,items:e.items,payment:e.payment||0,paymentMethod:e.paymentMethod||"CASH",occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,source:"ai"});
+        result=await createPurchase({businessId:s.businessId,userId:s.user.id,supplierId:e.supplierId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,source:"ai"});
         result={message:`Purchase ${result.referenceNumber} recorded for ${money(result.total)}.`,purchase:result};
         break;
       }

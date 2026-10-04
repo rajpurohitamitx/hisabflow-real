@@ -2,12 +2,18 @@ import { Prisma, PaymentMethod, PaymentKind, InventoryMovementType } from "@pris
 import { db } from "../db";
 import { audit } from "../audit";
 
+function normalizePaymentMethod(value: unknown): PaymentMethod {
+  const v = String(value ?? "CASH").trim().toUpperCase();
+  if (v === "CASH" || v === "UPI" || v === "CARD" || v === "BANK" || v === "OTHER") return v as PaymentMethod;
+  if (v === "ONLINE" || v === "NETBANKING" || v === "NET_BANKING") return PaymentMethod.BANK;
+  return PaymentMethod.CASH;
+}
 const D = Prisma.Decimal;
 
 function dec(v: unknown) { const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error("Invalid amount or quantity."); return new D(String(v)); }
 function invoiceNo() { return `INV-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random()*900+100)}`; }
 
-export async function createSale(input: { businessId:string; userId?:string; customerId?:string|null; items:{productId:string; quantity:number|string; rate?:number|string}[]; payment?:number|string; paymentMethod?:PaymentMethod; occurredAt?:Date; notes?:string; source?:string; }) {
+export async function createSale(input: { businessId:string; userId?:string; customerId?:string|null; items:{productId:string; quantity:number|string; rate?:number|string}[]; payment?:number|string; paymentMethod?:PaymentMethod|string; occurredAt?:Date; notes?:string; source?:string; }) {
   if (!input.items?.length) throw new Error("At least one product is required.");
   const result = await db.$transaction(async tx => {
     if(input.customerId){const customer=await tx.customer.findFirst({where:{id:input.customerId,businessId:input.businessId,archived:false}});if(!customer)throw new Error("Customer is not part of this business.");}
@@ -34,7 +40,7 @@ export async function createSale(input: { businessId:string; userId?:string; cus
     }
     if (input.customerId && sale.total.gt(0)) await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,saleId:sale.id,type:"RECEIVABLE",debit:sale.total,credit:new D(0),description:`Sale ${sale.invoiceNumber}`,occurredAt:sale.occurredAt}});
     if (payment.gt(0)) {
-      const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId || undefined,saleId:sale.id,amount:payment,method:input.paymentMethod || PaymentMethod.CASH,kind:PaymentKind.CUSTOMER_RECEIPT,occurredAt:sale.occurredAt,source:input.source || "manual"}});
+      const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId || undefined,saleId:sale.id,amount:payment,method:normalizePaymentMethod(input.paymentMethod),kind:PaymentKind.CUSTOMER_RECEIPT,occurredAt:sale.occurredAt,source:input.source || "manual"}});
       await tx.paymentAllocation.create({data:{paymentId:p.id,saleId:sale.id,amount:payment}});
       if (input.customerId) await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,paymentId:p.id,saleId:sale.id,type:"RECEIVABLE",debit:new D(0),credit:payment,description:`Payment for ${sale.invoiceNumber}`,occurredAt:sale.occurredAt}});
     }
@@ -44,7 +50,7 @@ export async function createSale(input: { businessId:string; userId?:string; cus
   return result;
 }
 
-export async function receivePayment(input:{businessId:string;userId?:string;customerId?:string;supplierId?:string;amount:number|string;method?:PaymentMethod;saleId?:string;purchaseId?:string;occurredAt?:Date;notes?:string;source?:string;}) {
+export async function receivePayment(input:{businessId:string;userId?:string;customerId?:string;supplierId?:string;amount:number|string;method?:PaymentMethod|string;saleId?:string;purchaseId?:string;occurredAt?:Date;notes?:string;source?:string;}) {
   const amount = dec(input.amount); if (amount.lte(0)) throw new Error("Payment must be greater than zero.");
   if (!input.customerId && !input.supplierId) throw new Error("Customer or supplier is required.");
   if (input.customerId && input.supplierId) throw new Error("Choose either customer or supplier, not both.");
@@ -64,20 +70,20 @@ export async function receivePayment(input:{businessId:string;userId?:string;cus
           if (remaining.lte(0)) break;
           const alloc = remaining.lt(sale.balanceDue) ? remaining : sale.balanceDue;
           await tx.sale.update({where:{id:sale.id},data:{amountPaid:{increment:alloc},balanceDue:{decrement:alloc}}});
-          const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,saleId:sale.id,amount:alloc,method:input.method || PaymentMethod.CASH,kind,occurredAt:input.occurredAt || new Date(),notes:input.notes,source:input.source || "manual"}});
+          const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,saleId:sale.id,amount:alloc,method:normalizePaymentMethod(input.method),kind,occurredAt:input.occurredAt || new Date(),notes:input.notes,source:input.source || "manual"}});
           await tx.paymentAllocation.create({data:{paymentId:p.id,saleId:sale.id,amount:alloc}});
           await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,paymentId:p.id,saleId:sale.id,type:"RECEIVABLE",debit:new D(0),credit:alloc,description:`Payment received for ${sale.invoiceNumber}`,occurredAt:p.occurredAt}});
           remaining = remaining.sub(alloc);
         }
         if (remaining.gt(0)) {
-          const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,amount:remaining,method:input.method || PaymentMethod.CASH,kind:PaymentKind.ADVANCE,occurredAt:input.occurredAt || new Date(),notes:input.notes || "Customer advance",source:input.source || "manual"}});
+          const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,amount:remaining,method:normalizePaymentMethod(input.method),kind:PaymentKind.ADVANCE,occurredAt:input.occurredAt || new Date(),notes:input.notes || "Customer advance",source:input.source || "manual"}});
           await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,paymentId:p.id,type:"RECEIVABLE",debit:new D(0),credit:remaining,description:"Customer advance",occurredAt:p.occurredAt}});
         }
         return { amount: amount.toString(), allocated: amount.sub(remainingAfter(openSales, amount)).toString(), customerId:input.customerId };
       }
     }
     if (input.supplierId) { const supplier=await tx.supplier.findFirst({where:{id:input.supplierId,businessId:input.businessId,archived:false}}); if(!supplier) throw new Error("Supplier is not part of this business."); kind = PaymentKind.SUPPLIER_PAYMENT; }
-    const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,supplierId:input.supplierId,saleId,purchaseId:input.purchaseId,amount,method:input.method || PaymentMethod.CASH,kind,occurredAt:input.occurredAt || new Date(),notes:input.notes,source:input.source || "manual"}});
+    const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,supplierId:input.supplierId,saleId,purchaseId:input.purchaseId,amount,method:normalizePaymentMethod(input.method),kind,occurredAt:input.occurredAt || new Date(),notes:input.notes,source:input.source || "manual"}});
     if (input.saleId && input.customerId) {
       const sale = await tx.sale.findUniqueOrThrow({where:{id:input.saleId}});
       if (amount.gt(sale.balanceDue)) throw new Error("Payment exceeds this invoice balance. Use customer outstanding allocation or advance.");
@@ -96,7 +102,7 @@ function remainingAfter(openSales: {balanceDue: Prisma.Decimal}[], amount: Prism
   let remaining=amount; for(const sale of openSales){ if(remaining.lte(0)) break; remaining=remaining.sub(remaining.lt(sale.balanceDue)?remaining:sale.balanceDue); } return remaining;
 }
 
-export async function createPurchase(input:{businessId:string;userId?:string;supplierId?:string|null;items:{productId:string;quantity:number|string;rate?:number|string}[];payment?:number|string;paymentMethod?:PaymentMethod;occurredAt?:Date;source?:string;}) {
+export async function createPurchase(input:{businessId:string;userId?:string;supplierId?:string|null;items:{productId:string;quantity:number|string;rate?:number|string}[];payment?:number|string;paymentMethod?:PaymentMethod|string;occurredAt?:Date;source?:string;}) {
   if(!input.items?.length) throw new Error("At least one product is required.");
   const result=await db.$transaction(async tx=>{
     const items:any[]=[]; let subtotal=new D(0);
@@ -115,9 +121,9 @@ export async function createPurchase(input:{businessId:string;userId?:string;sup
   await audit({businessId:input.businessId,userId:input.userId,action:"PURCHASE_CREATED",entityType:"Purchase",entityId:result.id,after:result});return result;
 }
 
-export async function createExpense(input:{businessId:string;userId?:string;category:string;amount:number|string;description?:string;paymentMethod?:PaymentMethod;occurredAt?:Date;source?:string;}) {
+export async function createExpense(input:{businessId:string;userId?:string;category:string;amount:number|string;description?:string;paymentMethod?:PaymentMethod|string;occurredAt?:Date;source?:string;}) {
   const amount=dec(input.amount); if(amount.lte(0)) throw new Error("Expense must be greater than zero.");
-  const expense=await db.expense.create({data:{businessId:input.businessId,category:input.category.trim()||"General",amount,description:input.description,paymentMethod:input.paymentMethod||PaymentMethod.CASH,occurredAt:input.occurredAt||new Date(),source:input.source||"manual"}});
+  const expense=await db.expense.create({data:{businessId:input.businessId,category:input.category.trim()||"General",amount,description:input.description,paymentMethod:normalizePaymentMethod(input.paymentMethod),occurredAt:input.occurredAt||new Date(),source:input.source||"manual"}});
   await audit({businessId:input.businessId,userId:input.userId,action:"EXPENSE_CREATED",entityType:"Expense",entityId:expense.id,after:expense});
   return expense;
 }

@@ -154,7 +154,19 @@ export async function POST(req: Request) {
     // Interactions API exposes the transcript as output_text. Keep a defensive
     // fallback for response shapes so a minor API response wrapper change does
     // not turn a valid transcript into the misleading "no transcription" error.
+    // REST responses expose generated content primarily under steps[].content[].
+    // The SDK convenience property output_text is not guaranteed to be serialized
+    // in the raw REST JSON, so extract text from every model_output step first.
+    const stepText = Array.isArray(interactionData?.steps)
+      ? interactionData.steps
+          .filter((step: any) => step?.type === "model_output")
+          .flatMap((step: any) => Array.isArray(step?.content) ? step.content : [])
+          .filter((part: any) => part?.type === "text" && typeof part?.text === "string")
+          .map((part: any) => part.text)
+          .join(" ")
+      : "";
     const outputText =
+      stepText ||
       interactionData?.output_text ||
       interactionData?.response?.output_text ||
       interactionData?.output?.text ||
