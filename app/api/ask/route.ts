@@ -16,7 +16,7 @@ export async function POST(req:Request){
     if(!text) return NextResponse.json({error:"Tell Hisab Flow what you need."},{status:400});
 
     const existingConversation=await db.conversation.findUnique({where:{businessId_key:{businessId:s.businessId,key:conversationId}},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
-    const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId}});
+    const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
 
     const pending:any=conversation.pendingAction||null;
     // Confirmation/cancellation is handled against the persisted action, not reinterpreted.
