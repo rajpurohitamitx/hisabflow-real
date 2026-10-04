@@ -11,7 +11,7 @@ export async function POST(req:Request){
     const t=String(text).trim();
     const shortFollowup=/^(?:yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|no|nope|cancel|stop|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના)$/i.test(t)
       || (t.split(/\s+/).length<=6 && !/[?]/.test(t) && /^(?:jinal|ramesh|suresh|kumar|anna nagar|adyar|tambaram|velachery|jinal\s|ramesh\s)/i.test(t));
-    const safePending=shortFollowup?pendingContext:null;
+    const safePending=pendingContext || null;
     // Never let an old conversation customer silently override a newly named customer.
     // Context is only allowed for genuinely referential follow-ups such as "he paid 500"
     // or "add the remaining balance". Explicit customer names must be resolved afresh.

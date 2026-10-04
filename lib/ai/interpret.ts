@@ -129,6 +129,67 @@ export async function interpret(businessId:string,text:string,context?:{
   // must answer the pending question, never become a fresh unrelated AI request.
   const pendingEntities=context?.pendingEntities || null;
   const pendingIntent=context?.pendingIntent || null;
+
+  // Universal pending-action patching. A follow-up is allowed to fill or change
+  // fields of the action already being prepared instead of starting a new action.
+  // This is especially important for reminders, but the same merge semantics are
+  // intentionally generic so future entity types can use it too.
+  function reminderDateTimeFromText(input:string){
+    const t=String(input||'').trim().toLowerCase();
+    const now=new Date();
+    const tz='Asia/Kolkata';
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now);
+    const y=Number(parts.find(x=>x.type==='year')?.value||now.getFullYear());
+    const m=Number(parts.find(x=>x.type==='month')?.value||now.getMonth()+1);
+    const d=Number(parts.find(x=>x.type==='day')?.value||now.getDate());
+    let date:Date|null=null;
+    if(/\btoday\b|\bஇன்று\b|\bhoy\b|\baaj\b|\baajee\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d,0,0,0));
+    else if(/\btomorrow\b|\bநாளை\b|\bkal\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d+1,0,0,0));
+    const explicit=t.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?\b/);
+    if(explicit){ const yy=explicit[3]?Number(explicit[3].length===2?'20'+explicit[3]:explicit[3]):y; date=new Date(Date.UTC(yy,Number(explicit[2])-1,Number(explicit[1]),0,0,0)); }
+    const time=t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b/i);
+    if(!date && time && /\b(?:today|tomorrow|aaj|kal|இன்று|நாளை)\b/i.test(t)) date=new Date(Date.UTC(y,m-1,d,0,0,0));
+    if(!date) return null;
+    let hh=0, mm=0;
+    if(time){
+      const rawH=Number(time[1]||time[4]); mm=Number(time[2]||time[5]||0); hh=rawH;
+      const ap=(time[3]||'').toLowerCase(); if(ap==='pm'&&hh<12)hh+=12; if(ap==='am'&&hh===12)hh=0;
+    }
+    // The server runs in UTC on many hosts. Interpret the spoken clock as IST.
+    return new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate(),hh-5,mm-30,0));
+  }
+  function patchPendingAction(input:string, base:any){
+    const e={...(base||{})};
+    const t=String(input||'').trim();
+    const low=t.toLowerCase();
+    if(String(base?.entityType||'').toUpperCase()==='REMINDER' || /\bremind(?:er| me)?\b/i.test(t)){
+      const due=reminderDateTimeFromText(t);
+      if(due) e.fields={...(e.fields||{}),dueAt:due.toISOString()};
+      const titleMatch=t.match(/\btitle\s*(?:is|=|:)?\s*(.+?)(?:\s+and\s+due(?:\s+date)?|\s+due\s+date|\s+due\s+time|$)/i);
+      if(titleMatch?.[1]) e.fields={...(e.fields||{}),title:titleMatch[1].trim().replace(/[.]+$/,'')};
+      const dateOnly=/\b(?:today|tomorrow|aaj|kal|இன்று|நாளை|\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/i.test(t);
+      if(dateOnly && !e.fields?.dueAt) { const d=reminderDateTimeFromText(t); if(d)e.fields={...(e.fields||{}),dueAt:d.toISOString()}; }
+      if(!e.fields?.title){
+        const task=t.replace(/\b(?:today|tomorrow|aaj|kal|இன்று|நாளை)\b/ig,'').replace(/\b(?:is|are|was|the|due|date|time|and|title|at|on|for)\b/ig,' ').replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/ig,' ').replace(/\s+/g,' ').trim();
+        if(task && !/^yes$|^ok$|^confirm$/i.test(task)) e.fields={...(e.fields||{}),title:task};
+      }
+      if(e.fields?.title && !e.fields.notes && e.note) e.fields.notes=e.note;
+      e.name=e.fields?.title||e.name;
+      e.query=e.fields?.title||e.query;
+      e.operation='CREATE'; e.entityType='REMINDER';
+      return e;
+    }
+    return e;
+  }
+  if(pendingIntent && pendingEntities && !/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|no|nope|cancel|stop|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના)$/i.test(String(text).trim())){
+    const patched=patchPendingAction(text,pendingEntities);
+    if(String(patched.entityType||'').toUpperCase()==='REMINDER'){
+      const fields=patched.fields||{};
+      const missing=[]; if(!fields.title)missing.push('title'); if(!fields.dueAt)missing.push('due date/time');
+      if(missing.length===0) return Interpretation.parse({intent:'MANAGE_ENTITY',entities:patched,confidence:{intent:.99,fields:.99},risk:'MEDIUM',response:`I understood: create reminder “${fields.title}”${patched.fields?.notes?` for ${patched.fields.notes}`:''} for ${new Date(fields.dueAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})}. Should I do that?`,requiresConfirmation:true,needsClarification:false});
+      return Interpretation.parse({intent:'MANAGE_ENTITY',entities:patched,confidence:{intent:.99,fields:.85},risk:'MEDIUM',response:`I still need: ${missing.join(' and ')}.`,requiresConfirmation:false,needsClarification:true});
+    }
+  }
   // A newly spoken customer name must never inherit the previous customer from the
   // conversation. Contextual customerId is only for pronoun/follow-up messages.
   const looksLikeExplicitCustomer = (value:string) => {
@@ -243,6 +304,28 @@ Conversation context: ${JSON.stringify(context||{})}`;
       parsed.entities ||= {};
       parsed.confidence ||= {};
       parsed.needsClarification=Boolean(parsed.needsClarification);
+
+      // Generic field-level pending patch: preserve the original operation and
+      // merge only fields the new utterance actually supplies. This prevents a
+      // clarification such as “today is due date and title is biscuit reminder”
+      // from wiping the original reminder task, customer, product, amount, etc.
+      if(context?.pendingIntent && context.pendingEntities){
+        const affirmativeNow=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/i.test(String(text).trim());
+        const negativeNow=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ఇల్ల|ಇಲ್ಲ|ഇല്ല|ના)$/i.test(String(text).trim());
+        if(!affirmativeNow&&!negativeNow){
+          const base=context.pendingEntities as any;
+          const incoming=parsed.entities as any;
+          const merged:any={...base,...incoming};
+          if(base.fields||incoming.fields) merged.fields={...(base.fields||{}),...(incoming.fields||{})};
+          // Explicit entity identity in the newest turn wins; otherwise preserve
+          // the pending identity. Never resurrect an unrelated stale ID.
+          for(const k of ['customerId','productId','supplierId','entityId']){
+            if(incoming[k]===null||incoming[k]===undefined||incoming[k]==='') merged[k]=base[k];
+          }
+          parsed.entities=merged;
+          parsed.intent=context.pendingIntent;
+        }
+      }
 
       // Conversational confirmation/selection: carry the unresolved operation forward
       // so replies like "yes", "haan", "ஆம்" or "Jinal Adyar" are answers to the

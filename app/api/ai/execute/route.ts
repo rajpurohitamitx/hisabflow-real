@@ -115,9 +115,14 @@ export async function POST(req:Request){
         result={message:`${archived.name} has been archived. Historical sales and payments were kept intact.`,customer:archived};
         break;
       }
-      case "CREATE_REMINDER":
-        {const now=new Date();const due=new Date(now);const day=due.getDay();const delta=(8-day)%7||7;due.setDate(due.getDate()+delta);due.setHours(9,0,0,0);const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId,title:e.title||"Customer follow-up",dueAt:due,channel:"in_app"}});result={message:`Follow-up reminder created for next Monday at 9:00 AM.`,reminder:r};}
+      case "CREATE_REMINDER": {
+        const due=e.dueAt||e.fields?.dueAt;
+        const title=String(e.title||e.fields?.title||"Customer follow-up").trim();
+        if(!title||!due) return NextResponse.json({error:"Reminder needs a title and due date/time."},{status:409});
+        const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId||null,title,dueAt:new Date(due),channel:String(e.channel||e.fields?.channel||"in_app"),notes:e.notes||e.fields?.notes||null}});
+        result={message:`Reminder “${title}” created for ${new Date(due).toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"medium",timeStyle:"short"})}.`,reminder:r};
         break;
+      }
       case "CUSTOMER_STATEMENT":
         {if(!e.customerId)return NextResponse.json({error:"Which customer do you mean?",requiresCustomer:true,matches:e.matches||[]},{status:409});const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));result={message:`Statement prepared for ${customer.name}.`,customer:customer.name,statement};}
         break;
