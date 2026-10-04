@@ -11,45 +11,6 @@ const LANG_CODES: Record<string, string> = {
   gujarati: "gu-IN",
 };
 
-async function uploadToGeminiFiles(key: string, bytes: Buffer, mimeType: string, displayName: string) {
-  const init = await fetch("https://generativelanguage.googleapis.com/upload/v1beta/files", {
-    method: "POST",
-    headers: {
-      "x-goog-api-key": key,
-      "x-goog-upload-protocol": "resumable",
-      "x-goog-upload-command": "start",
-      "x-goog-upload-header-content-length": String(bytes.length),
-      "x-goog-upload-header-content-type": mimeType,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ file: { display_name: displayName } }),
-    cache: "no-store",
-  });
-  const initText = await init.text();
-  if (!init.ok) throw new Error(`Gemini file upload init failed (${init.status}): ${initText.slice(0, 600)}`);
-  const uploadUrl = init.headers.get("x-goog-upload-url");
-  if (!uploadUrl) throw new Error("Gemini did not return a resumable upload URL.");
-
-  const upload = await fetch(uploadUrl, {
-    method: "POST",
-    headers: {
-      "content-length": String(bytes.length),
-      "x-goog-upload-offset": "0",
-      "x-goog-upload-command": "upload, finalize",
-    },
-    body: bytes,
-    cache: "no-store",
-  });
-  const uploadText = await upload.text();
-  if (!upload.ok) throw new Error(`Gemini audio upload failed (${upload.status}): ${uploadText.slice(0, 600)}`);
-  let data: any;
-  try { data = JSON.parse(uploadText); } catch { throw new Error("Gemini returned an invalid file-upload response."); }
-  const uri = data?.file?.uri;
-  const uploadedMime = data?.file?.mimeType || mimeType;
-  if (!uri) throw new Error("Gemini audio upload completed without a file URI.");
-  return { uri, mimeType: uploadedMime };
-}
-
 export async function POST(req: Request) {
   try {
     const session = await requireSession();
@@ -59,12 +20,13 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) return NextResponse.json({ error: "Audio file is required." }, { status: 400 });
-    if (file.size < 500) return NextResponse.json({ error: "The recording is empty or too short. Please speak for a moment and try again." }, { status: 400 });
     if (file.size > 18_000_000) return NextResponse.json({ error: "Voice recording is too large. Please keep it short and try again." }, { status: 413 });
 
     const requestedLanguage = String(form.get("language") || "").toLowerCase();
     const languageCode = LANG_CODES[requestedLanguage];
 
+    // Give the transcription model the vocabulary that actually exists in this business.
+    // This is deliberately dynamic: customer/product names do not need to be hard-coded.
     const [customers, products, memories, aliases] = await Promise.all([
       db.customer.findMany({ where: { businessId: session.businessId, archived: false }, select: { name: true }, take: 250 }),
       db.product.findMany({ where: { businessId: session.businessId, archived: false }, select: { name: true, sku: true }, take: 250 }),
@@ -73,43 +35,130 @@ export async function POST(req: Request) {
     ]);
 
     const vocabulary = Array.from(new Set([
-      ...customers.map(x => x.name),
-      ...products.flatMap(x => [x.name, x.sku].filter(Boolean) as string[]),
-      ...memories.flatMap(x => [x.key, x.value].filter(Boolean) as string[]),
-      ...aliases.flatMap(x => [x.value, x.normalized].filter(Boolean)),
+      ...customers.map((x: { name: string }) => x.name),
+      ...products.flatMap((x: { name: string; sku: string | null }) => [x.name, x.sku].filter(Boolean) as string[]),
+      ...memories.flatMap((x: { key: string; value: string }) => [x.key, x.value].filter(Boolean) as string[]),
+      ...aliases.flatMap((x: { value: string; normalized: string }) => [x.value, x.normalized].filter(Boolean)) ,
       "Hisab Flow", "rupees", "INR", "cash", "UPI", "credit", "balance", "bill", "invoice", "sale", "purchase", "payment", "stock", "chain", "ring",
     ])).filter(x => x && x.length > 1).slice(0, 1000);
 
-    const bytes = Buffer.from(await file.arrayBuffer());
+    // Keep the audio as standard Web API binary data. This avoids Node Buffer
+    // generic-type incompatibilities in Vercel's TypeScript/fetch definitions.
+    const sourceBytes = new Uint8Array(await file.arrayBuffer());
     const mimeType = file.type || "audio/webm";
-    const uploaded = await uploadToGeminiFiles(key, bytes, mimeType, `hisabflow-voice-${Date.now()}`);
+
+    // Gemini 3.5 Transcribe's documented REST flow uploads the audio through
+    // the Files API first, then passes the returned file URI to generateContent.
+    // This is more reliable than sending microphone WebM as inlineData.
+    const displayName = `hisabflow-voice-${Date.now()}.webm`;
+
+    // Use the documented resumable Files API flow. The Transcribe model's
+    // REST examples upload the audio first and then reference the returned
+    // file URI from generateContent.
+    const initResponse = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(key)}`,
+      {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": key,
+          "x-goog-upload-protocol": "resumable",
+          "x-goog-upload-command": "start",
+          "x-goog-upload-header-content-length": String(sourceBytes.byteLength),
+          "x-goog-upload-header-content-type": mimeType,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ file: { display_name: displayName } }),
+        cache: "no-store",
+      },
+    );
+
+    if (!initResponse.ok) {
+      const initData = await initResponse.json().catch(() => ({}));
+      throw new Error(initData?.error?.message || `Gemini file upload initialization failed (${initResponse.status}).`);
+    }
+
+    const uploadUrl = initResponse.headers.get("x-goog-upload-url");
+    if (!uploadUrl) {
+      throw new Error("Gemini did not return an upload URL for the voice recording.");
+    }
+
+    // Build a plain ArrayBuffer so Node/TypeScript fetch accepts the request body
+    // without the Buffer<ArrayBufferLike> vs BodyInit type mismatch.
+    const uploadBody = new ArrayBuffer(sourceBytes.byteLength);
+    new Uint8Array(uploadBody).set(sourceBytes);
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        "content-length": String(sourceBytes.byteLength),
+        "x-goog-upload-offset": "0",
+        "x-goog-upload-command": "upload, finalize",
+      },
+      body: uploadBody,
+      cache: "no-store",
+    });
+
+    const uploadData = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok) {
+      throw new Error(uploadData?.error?.message || `Gemini audio upload failed (${uploadResponse.status}).`);
+    }
+
+    const fileUri = uploadData?.file?.uri;
+    const uploadedMimeType = uploadData?.file?.mimeType || mimeType;
+    if (!fileUri) {
+      throw new Error("Gemini uploaded the recording but did not return a file URI.");
+    }
+
+    const generationConfig: any = {
+      audioTranscriptionConfig: {
+        mode: "SMART",
+        customVocabulary: vocabulary,
+        ...(languageCode ? { languageCodes: [languageCode] } : { languageCodes: [] }),
+      },
+    };
 
     const model = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
-    const audioTranscriptionConfig: Record<string, any> = {
-      mode: "SMART",
-      customVocabulary: vocabulary,
-    };
-    if (languageCode) audioTranscriptionConfig.languageCodes = [languageCode];
-
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
       {
         method: "POST",
         headers: { "content-type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({
-          contents: [{ parts: [{ fileData: { fileUri: uploaded.uri, mimeType: uploaded.mimeType } }] }],
-          generationConfig: { audioTranscriptionConfig },
+          contents: [
+            {
+              parts: [
+                {
+                  fileData: {
+                    fileUri,
+                    mimeType: uploadedMimeType,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig,
         }),
         cache: "no-store",
       },
     );
+
     const data = await response.json();
-    if (!response.ok) throw new Error(data?.error?.message || `Gemini transcription failed (${response.status}).`);
+    if (!response.ok) {
+      const message = data?.error?.message || `Gemini transcription failed (${response.status}).`;
+      throw new Error(message);
+    }
 
     const text = String(
-      data?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || "").join(" ") || data?.text || "",
+      data?.candidates?.[0]?.content?.parts
+        ?.map((part: any) => part?.text || "")
+        ?.join(" ") || data?.text || ""
     ).trim();
-    if (!text) throw new Error("Gemini processed the audio but returned no transcription. Please try again with a clear 1–15 second recording.");
+
+    if (!text) {
+      throw new Error(
+        "Gemini processed the audio but returned no transcription. Please try a clear 1–15 second recording."
+      );
+    }
 
     return NextResponse.json({ text, provider: "gemini", model });
   } catch (e: any) {
