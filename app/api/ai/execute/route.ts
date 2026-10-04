@@ -21,6 +21,22 @@ export async function POST(req:Request){
         // A new customer is created only after the AI action has reached the explicit
         // confirmation step. The accounting mutation and payment are then committed
         // through the same deterministic business service flow.
+        // Defense-in-depth: the action must never execute against a stale customerId
+        // when the current action explicitly names a different customer. This prevents
+        // a previous Ramesh conversation from receiving Jinal's payment.
+        if(customerName && customerId){
+          const bound=await db.customer.findFirst({where:{id:customerId,businessId:s.businessId,archived:false}});
+          if(!bound || bound.name.trim().toLowerCase()!==customerName.trim().toLowerCase()){
+            const exact=await db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}},take:2});
+            if(exact.length===1){ customerId=exact[0].id; customerName=exact[0].name; }
+            else if(exact.length===0 && e.createCustomer===true){
+              const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
+              customerId=created.id; customerName=created.name;
+            } else {
+              return NextResponse.json({error:`I won't apply this payment to ${bound?.name||"the previous customer"}. I need a valid customer match for ${customerName}.`,requiresCustomer:true,matches:exact.map(x=>({id:x.id,name:x.name,phone:x.phone})),canCreateCustomer:exact.length===0,proposedCustomerName:customerName},{status:409});
+            }
+          }
+        }
         if(!customerId && e.createCustomer===true && customerName){
           const existing=await db.customer.findFirst({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}}});
           if(existing){ customerId=existing.id; customerName=existing.name; }

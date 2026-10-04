@@ -12,7 +12,13 @@ export async function POST(req:Request){
     const shortFollowup=/^(?:yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|no|nope|cancel|stop|nahi|nahin|नहीं|नही|இல்லை|கூடாது|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના)$/i.test(t)
       || (t.split(/\s+/).length<=6 && !/[?]/.test(t) && /^(?:jinal|ramesh|suresh|kumar|anna nagar|adyar|tambaram|velachery|jinal\s|ramesh\s)/i.test(t));
     const safePending=shortFollowup?pendingContext:null;
-    const result=await interpret(s.businessId,text,{customerId:conversation?.customerId,productId:conversation?.productId,lastIntent:conversation?.lastIntent,pendingIntent:safePending?.intent||null,pendingEntities:safePending?.entities||null,pendingQuestion:safePending?.question||null,history:(conversation?.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text}))});
+    // Never let an old conversation customer silently override a newly named customer.
+    // Context is only allowed for genuinely referential follow-ups such as "he paid 500"
+    // or "add the remaining balance". Explicit customer names must be resolved afresh.
+    const explicitCustomerReference = /^(?!\s*(?:he|she|they|him|her|them|avan|aval|avanga|uske|usko|woh|वह|उसने|उसे|அவன்|அவள்)\b)[\p{L}][\p{L}.'-]{1,30}(?:\s+[\p{L}][\p{L}.'-]{1,20}){0,2}\s*(?:paid|pay|gave|received|bought|purchased|took|liya|ne|ku|ko|se|ने|को|से|க்கு|கிட்ட)\b/iu.test(t)
+      || /\b(?:paid|pay|gave|received from|bought|purchased|took|liya|ne|ku|ko|se|ने|को|से|க்கு|கிட்ட)\b/i.test(t) && /^[\p{L}]/u.test(t);
+    const contextualCustomerId = explicitCustomerReference ? null : conversation?.customerId;
+    const result=await interpret(s.businessId,text,{customerId:contextualCustomerId,productId:conversation?.productId,lastIntent:conversation?.lastIntent,pendingIntent:safePending?.intent||null,pendingEntities:safePending?.entities||null,pendingQuestion:safePending?.question||null,history:(conversation?.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text}))});
     const action=await db.aIAction.create({data:{businessId:s.businessId,userId:s.user.id,input:text,intent:result.intent,entities:result.entities as any,confidence:result.confidence as any,risk:result.risk,status:"INTERPRETED"}});
     const conv=conversation || await db.conversation.create({data:{businessId:s.businessId,key:conversationId}});
     await db.conversationMessage.createMany({data:[{conversationId:conv.id,role:"user",text},{conversationId:conv.id,role:"assistant",text:result.response||""}]});

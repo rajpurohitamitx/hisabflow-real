@@ -105,6 +105,19 @@ export async function interpret(businessId:string,text:string,context?:{
   // must answer the pending question, never become a fresh unrelated AI request.
   const pendingEntities=context?.pendingEntities || null;
   const pendingIntent=context?.pendingIntent || null;
+  // A newly spoken customer name must never inherit the previous customer from the
+  // conversation. Contextual customerId is only for pronoun/follow-up messages.
+  const looksLikeExplicitCustomer = (value:string) => {
+    const t=value.trim();
+    if(!t) return false;
+    // A named customer normally appears as the grammatical subject/object of a
+    // payment/sale phrase. Pronouns deliberately remain contextual.
+    if(/^(?:he|she|they|him|her|them|avan|aval|avanga|uske|usko|unhone|woh|அவன்|அவள்|அவர்கள்|அவரை|वह|उसने|उसे|वे|उन्होंने)\b/i.test(t)) return false;
+    if(/^(?:i|me|we|you|my|mera|meri|main|maine|मैं|मेरा|मेरी|நான்|என்|మన|నేను)\b/i.test(t)) return false;
+    return /^(?:[\p{L}][\p{L}.'-]{1,30})(?:\s+(?:[\p{L}][\p{L}.'-]{1,20})){0,2}\s*(?:paid|pay|gave|gave me|received from|from|bought|purchased|took|liya|ne|ku|ko|se|க்கு|கிட்ட|ने|को|से|ने)$/iu.test(t)
+      || /\b(?:paid|pay|gave|received from|bought|purchased|took|liya|ne|ku|ko|se|க்கு|கிட்ட|ने|को|से)\b/i.test(t) && !/\b(?:he|she|they|him|her|them|avan|aval|avanga|uske|usko|woh|அவன்|அவள்|वह|उसने)\b/i.test(t) && /^[\p{L}]/u.test(t);
+  };
+  const safeContextCustomerId = looksLikeExplicitCustomer(String(text)) ? null : (context?.customerId || null);
   const normalizedReply=normalize(text);
   const affirmative=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)\b/i.test(text.trim());
   const negative=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇല്ല|ના)\b/i.test(text.trim());
@@ -347,12 +360,12 @@ Conversation context: ${JSON.stringify(context||{})}`;
   const t=normalize(text);
   const amount=amountFromText(text);
   const paymentWords=/(paid|payment|received|gave|give|de\s*diye|payment\s*aa|pay|paisa|₹|रुप|पैसे|दिया|दिए|கொடுத்த|பணம்)/i.test(text);
-  if(paymentWords && amount===undefined && context?.customerId) return Interpretation.parse({intent:"RECEIVE_PAYMENT",entities:{customerId:context.customerId,customerName:"",amount:null,currency:"INR"},confidence:{intent:0.96,customer:0.98,amount:0.15},risk:"MEDIUM",requiresConfirmation:false,needsClarification:true,response:"How much did the customer pay?"});
-  if(context?.lastIntent==="RECEIVE_PAYMENT" && amount!==undefined && context.customerId) return Interpretation.parse({intent:"RECEIVE_PAYMENT",entities:{customerId:context.customerId,customerName:"",amount,currency:"INR"},confidence:{intent:0.97,customer:0.98,amount:0.98},risk:"MEDIUM",requiresConfirmation:true,needsClarification:false,response:`I understood a ₹${amount.toLocaleString("en-IN")} payment from the customer.`});
+  if(paymentWords && amount===undefined && safeContextCustomerId) return Interpretation.parse({intent:"RECEIVE_PAYMENT",entities:{customerId:safeContextCustomerId,customerName:"",amount:null,currency:"INR"},confidence:{intent:0.96,customer:0.98,amount:0.15},risk:"MEDIUM",requiresConfirmation:false,needsClarification:true,response:"How much did the customer pay?"});
+  if(context?.lastIntent==="RECEIVE_PAYMENT" && amount!==undefined && safeContextCustomerId) return Interpretation.parse({intent:"RECEIVE_PAYMENT",entities:{customerId:safeContextCustomerId,customerName:"",amount,currency:"INR"},confidence:{intent:0.97,customer:0.98,amount:0.98},risk:"MEDIUM",requiresConfirmation:true,needsClarification:false,response:`I understood a ₹${amount.toLocaleString("en-IN")} payment from the customer.`});
   if(paymentWords && amount!==undefined){
     const rawName=text.replace(/\b(?:paid|payment|received|gave|give|from|de|diye|ne|ku|ka|ko|se|par|la|pannitaan|vandhuduchu|vandhudhu|aa|gaya|रुपये|रुपया|पैसे|दिया|दिए|கொடுத்த|பணம்|₹|rs\.?|inr|\d[\d,.]*k?\b)\b/gi," ").replace(/\s+/g," ").trim();
-    const customerQuery=rawName || (context?.customerId?"context":"");
-    let customerId=context?.customerId||null, customerName=""; let matches:any[]=[]; let conf=0.6;
+    const customerQuery=rawName || (safeContextCustomerId?"context":"");
+    let customerId=safeContextCustomerId, customerName=""; let matches:any[]=[]; let conf=0.6;
     if(customerQuery && customerQuery!=="context"){ const r=await resolveCustomer(businessId,customerQuery); matches=r.matches; if(r.selected){customerId=r.selected.id;customerName=r.selected.name;conf=r.confidence;} }
     return Interpretation.parse({intent:"RECEIVE_PAYMENT",entities:{customerId,customerName,customerQuery,amount,currency:"INR",matches:matches.map(x=>({id:x.id,name:x.name,phone:x.phone})),customerResolution:!customerId&&matches.length===0?"CREATE_OR_CONFIRM":undefined,proposedCustomerName:!customerId&&matches.length===0?customerQuery:undefined},confidence:{intent:0.95,customer:conf,amount:0.98},risk:"MEDIUM",requiresConfirmation:true,needsClarification:!customerId,response:customerId?`I understood a ₹${amount.toLocaleString("en-IN")} payment from ${customerName}. Please confirm.`:`I couldn't find that customer. Should I add ${customerQuery} as a new customer?`});
   }

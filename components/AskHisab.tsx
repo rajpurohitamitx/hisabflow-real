@@ -9,31 +9,38 @@ export default function AskHisab(){
  const [text,setText]=useState("");
  const [msgs,setMsgs]=useState<Msg[]>([{role:"assistant",text:"I’m your business copilot. Speak naturally — English, Hindi, Tamil, Telugu or mixed language. I’ll understand the intent, check your live records, and ask before making a risky financial change."}]);
  const [pending,setPending]=useState<any>(null); const pendingRef=useRef<any>(null); const [busy,setBusy]=useState(false); const [listening,setListening]=useState(false); const [speaking,setSpeaking]=useState(false); const [voiceEnabled,setVoiceEnabled]=useState(true); const [language,setLanguage]=useState("Auto");
- const recRef=useRef<any>(null); const wakeRef=useRef<any>(null); const voiceSessionRef=useRef(false); const mediaRef=useRef<MediaRecorder|null>(null); const autoListenTimerRef=useRef<any>(null); const silenceTimerRef=useRef<any>(null); const audioContextRef=useRef<AudioContext|null>(null); const livePcRef=useRef<RTCPeerConnection|null>(null); const liveDcRef=useRef<RTCDataChannel|null>(null); const liveStreamRef=useRef<MediaStream|null>(null); const chunksRef=useRef<Blob[]>([]); const audioRef=useRef<HTMLAudioElement|null>(null);
+ const recRef=useRef<any>(null); const wakeRef=useRef<any>(null); const voiceSessionRef=useRef(false); const busyRef=useRef(false); const speakingRef=useRef(false); const mediaRef=useRef<MediaRecorder|null>(null); const autoListenTimerRef=useRef<any>(null); const silenceTimerRef=useRef<any>(null); const audioContextRef=useRef<AudioContext|null>(null); const livePcRef=useRef<RTCPeerConnection|null>(null); const liveDcRef=useRef<RTCDataChannel|null>(null); const liveStreamRef=useRef<MediaStream|null>(null); const chunksRef=useRef<Blob[]>([]); const audioRef=useRef<HTMLAudioElement|null>(null);
  useEffect(()=>{pendingRef.current=pending;},[pending]);
+ useEffect(()=>{busyRef.current=busy;},[busy]);
+ useEffect(()=>{speakingRef.current=speaking;},[speaking]);
  useEffect(()=>{
    const Recognition=(window as any).SpeechRecognition||(window as any).webkitSpeechRecognition;
    if(!Recognition) return;
    let stopped=false;
    const startWake=()=>{
-     if(stopped||voiceSessionRef.current||wakeRef.current||speaking||busy) return;
+     if(stopped||wakeRef.current||mediaRef.current||livePcRef.current||speakingRef.current||busyRef.current) return;
      try{
        const r=new Recognition(); wakeRef.current=r; r.continuous=true; r.interimResults=true; r.lang="en-IN";
        r.onresult=(e:any)=>{
          let heard=""; for(let i=e.resultIndex;i<e.results.length;i++) heard+=` ${e.results[i][0].transcript}`;
-         const n=heard.toLowerCase().replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
-         if(/\b(?:hi|hey|hai|hello)\s+(?:hisab|hisaab|hesab|hisabflow|hisab flow)\b/.test(n)){
-           try{r.stop()}catch{} wakeRef.current=null; voiceSessionRef.current=true; setTimeout(()=>startVoice(true),120);
+         const raw=heard.trim();
+         const n=raw.toLowerCase().replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+         const match=n.match(/\b(?:hi|hey|hai|hello)\s+(?:hisab|hisaab|hesab|hisabflow|hisab flow)\b\s*(.*)$/i);
+         if(match){
+           try{r.stop()}catch{} wakeRef.current=null; voiceSessionRef.current=true;
+           const tail=String(match[1]||"").trim();
+           setTimeout(()=>{ if(tail) { send(tail); } else startVoice(true); },180);
          }
        };
-       r.onerror=()=>{wakeRef.current=null; if(!stopped&&!voiceSessionRef.current)setTimeout(startWake,900)};
-       r.onend=()=>{wakeRef.current=null; if(!stopped&&!voiceSessionRef.current)setTimeout(startWake,700)};
+       r.onerror=()=>{wakeRef.current=null; if(!stopped)setTimeout(startWake,900)};
+       r.onend=()=>{wakeRef.current=null; if(!stopped)setTimeout(startWake,500)};
        r.start();
-     }catch{wakeRef.current=null;}
+     }catch{wakeRef.current=null; if(!stopped)setTimeout(startWake,1200)}
    };
    startWake();
-   return()=>{stopped=true; try{wakeRef.current?.stop()}catch{} wakeRef.current=null;};
- },[speaking,busy]);
+   const timer=setInterval(startWake,1500);
+   return()=>{stopped=true;clearInterval(timer);try{wakeRef.current?.stop()}catch{}wakeRef.current=null;};
+ },[]);
  useEffect(()=>()=>{try{wakeRef.current?.stop()}catch{} recRef.current?.stop();mediaRef.current?.stop();if(autoListenTimerRef.current)clearTimeout(autoListenTimerRef.current);if(silenceTimerRef.current)clearTimeout(silenceTimerRef.current);audioContextRef.current?.close();audioRef.current?.pause();livePcRef.current?.close();liveStreamRef.current?.getTracks().forEach(t=>t.stop())},[]);
 
  async function speak(answer:string){
@@ -115,6 +122,8 @@ export default function AskHisab(){
    finally{setBusy(false)}
  }
  async function startVoice(auto=false){
+   // Once voice is activated, keep the in-app hands-free session enabled. The
+   // wake listener will resume after this turn unless Hisab is speaking/thinking.
    voiceSessionRef.current=true;
    if(listening){recRef.current?.stop();mediaRef.current?.stop();setListening(false);return}
    const localMode=process.env.NEXT_PUBLIC_AI_PROVIDER==='ollama'||process.env.NEXT_PUBLIC_AI_PROVIDER==='gemini';
