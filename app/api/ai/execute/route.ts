@@ -30,7 +30,7 @@ export async function POST(req:Request){
           }
         }
         if(!customerId) return NextResponse.json({error:"Which customer should receive this payment?",requiresCustomer:true,matches:e.matches||[],canCreateCustomer:Boolean(e.proposedCustomerName)},{status:409});
-        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai"});
+        result=await receivePayment({businessId:s.businessId,userId:s.user.id,customerId,amount:e.amount,method:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,source:"ai",applyToOutstanding:Boolean(e.applyToOutstanding)});
         result={message:`${money(e.amount)} received from ${customerName||"customer"}.`,payment:result,customerId,customerName}; break;
       }
       case "CREATE_REMINDER":
@@ -98,8 +98,20 @@ export async function POST(req:Request){
       }
       case "CREATE_SALE": {
         if(!e.items?.length) return NextResponse.json({error:"I understood the sale, but need the product and quantity.",needsDetails:true},{status:409});
-        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:e.customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
-        result={message:`Sale ${result.invoiceNumber} created for ${money(result.total)}. Outstanding: ${money(result.balanceDue)}.`,sale:result};
+        let customerId=e.customerId as string|undefined;
+        let customerName=String(e.customerName||e.customerQuery||e.proposedCustomerName||"").trim();
+        if(!customerId && customerName){
+          const exact=await db.customer.findMany({where:{businessId:s.businessId,archived:false,name:{equals:customerName,mode:"insensitive"}},take:5});
+          if(exact.length===1){ customerId=exact[0].id; customerName=exact[0].name; }
+          else if(exact.length>1) return NextResponse.json({error:`I found multiple customers named ${customerName}. Please choose the customer before I save this sale.`,requiresCustomer:true,matches:exact.map(x=>({id:x.id,name:x.name,phone:x.phone,address:x.address}))},{status:409});
+          else if(e.createCustomer===true){
+            const created=await db.customer.create({data:{businessId:s.businessId,name:customerName,phone:e.phone||undefined,email:e.email||undefined,address:e.address||e.proposedCustomerAddress||undefined}});
+            customerId=created.id; customerName=created.name;
+          }
+          else return NextResponse.json({error:`I couldn't find ${customerName}. I won't save this as a walk-in sale. Should I create this customer?`,requiresCustomer:true,canCreateCustomer:true,proposedCustomerName:customerName},{status:409});
+        }
+        result=await createSale({businessId:s.businessId,userId:s.user.id,customerId:customerId||undefined,items:e.items,payment:e.payment||0,paymentMethod:String(e.paymentMethod||"CASH").trim().toUpperCase() as any,occurredAt:e.occurredAt?new Date(e.occurredAt):undefined,notes:e.notes,source:"ai"});
+        result={message:`Sale ${result.invoiceNumber} created for ${money(result.total)}${customerName?` for ${customerName}`:""}. Outstanding: ${money(result.balanceDue)}.`,sale:result,customerId,customerName};
         break;
       }
       case "CREATE_PURCHASE": {

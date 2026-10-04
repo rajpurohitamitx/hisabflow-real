@@ -302,6 +302,12 @@ Conversation context: ${JSON.stringify(context||{})}`;
       const mutationIntents=["RECEIVE_PAYMENT","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","ADJUST_STOCK"];
       if(mutationIntents.includes(parsed.intent)){
         const e=parsed.entities||{};
+        if(parsed.intent==="RECEIVE_PAYMENT") {
+          // Explicit phrases such as "cut the due", "against outstanding",
+          // "balance was due" mean this payment must be allocated to an
+          // existing receivable rather than silently becoming an advance.
+          e.applyToOutstanding = Boolean(e.applyToOutstanding) || /\b(due|outstanding|balance|against|cut|credit)\b|बाकी|उधार|बकाया|काट|बकाया|கடன்|பாக்கி|பாலன்ஸ்/i.test(String(text));
+        }
         if(parsed.intent==="RECEIVE_PAYMENT" && (e.amount===null || e.amount===undefined || Number.isNaN(Number(e.amount)))){
           parsed.needsClarification=true; parsed.requiresConfirmation=false; parsed.response="How much did the customer pay?";
         }

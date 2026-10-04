@@ -50,7 +50,7 @@ export async function createSale(input: { businessId:string; userId?:string; cus
   return result;
 }
 
-export async function receivePayment(input:{businessId:string;userId?:string;customerId?:string;supplierId?:string;amount:number|string;method?:PaymentMethod|string;saleId?:string;purchaseId?:string;occurredAt?:Date;notes?:string;source?:string;}) {
+export async function receivePayment(input:{businessId:string;userId?:string;customerId?:string;supplierId?:string;amount:number|string;method?:PaymentMethod|string;saleId?:string;purchaseId?:string;occurredAt?:Date;notes?:string;source?:string;applyToOutstanding?:boolean;}) {
   const amount = dec(input.amount); if (amount.lte(0)) throw new Error("Payment must be greater than zero.");
   if (!input.customerId && !input.supplierId) throw new Error("Customer or supplier is required.");
   if (input.customerId && input.supplierId) throw new Error("Choose either customer or supplier, not both.");
@@ -64,7 +64,58 @@ export async function receivePayment(input:{businessId:string;userId?:string;cus
         const sale = await tx.sale.findFirst({where:{id:saleId,businessId:input.businessId,customerId:input.customerId,status:"CONFIRMED"}});
         if (!sale) throw new Error("Sale not found for this customer.");
       } else {
-        const openSales = await tx.sale.findMany({where:{businessId:input.businessId,customerId:input.customerId,status:"CONFIRMED",balanceDue:{gt:0}},orderBy:{occurredAt:"asc"}});
+        let repairedResult: {amount:string;allocated:string;advance:string;customerId:string;repairedAdvance?:boolean} | null = null;
+        let openSales = await tx.sale.findMany({where:{businessId:input.businessId,customerId:input.customerId,status:"CONFIRMED",balanceDue:{gt:0}},orderBy:{occurredAt:"asc"}});
+
+        // Repair a common legacy/walk-in case safely: an earlier sale may have been
+        // recorded without the customerId even though the user is now explicitly
+        // saying that this named customer's payment should cut an existing due.
+        // We only relink when the user explicitly requested outstanding allocation
+        // AND exactly one unassigned confirmed sale has the exact same due amount.
+        // Never guess between multiple invoices and never relink an arbitrary sale.
+        if (input.applyToOutstanding && openSales.length === 0) {
+          const candidates = await tx.sale.findMany({
+            where:{businessId:input.businessId,customerId:null,status:"CONFIRMED",balanceDue:{gt:0}},
+            orderBy:{occurredAt:"desc"},
+            take:100,
+          });
+          const exact = candidates.filter(x => x.balanceDue.eq(amount));
+          if (exact.length === 1) {
+            const legacySale = exact[0];
+            await tx.sale.update({where:{id:legacySale.id},data:{customerId:input.customerId}});
+            await tx.ledgerEntry.updateMany({
+              where:{businessId:input.businessId,saleId:legacySale.id,customerId:null,type:"RECEIVABLE"},
+              data:{customerId:input.customerId},
+            });
+
+            // If the earlier buggy flow already recorded this exact payment as a
+            // customer advance, repair that payment in-place instead of charging
+            // the customer twice. Only reuse it when there is exactly one matching
+            // unallocated advance, so unrelated advances are never guessed.
+            const priorAdvances = await tx.payment.findMany({
+              where:{businessId:input.businessId,customerId:input.customerId,saleId:null,purchaseId:null,kind:PaymentKind.ADVANCE,amount},
+              orderBy:{createdAt:"desc"},
+              take:2,
+            });
+            if (priorAdvances.length === 1) {
+              const prior = priorAdvances[0];
+              await tx.sale.update({where:{id:legacySale.id},data:{amountPaid:{increment:amount},balanceDue:{decrement:amount}}});
+              await tx.payment.update({where:{id:prior.id},data:{kind:PaymentKind.CUSTOMER_RECEIPT,saleId:legacySale.id,notes:input.notes||"Applied to outstanding sale"}});
+              await tx.paymentAllocation.create({data:{paymentId:prior.id,saleId:legacySale.id,amount}});
+              await tx.ledgerEntry.updateMany({
+                where:{businessId:input.businessId,paymentId:prior.id,saleId:null,type:"RECEIVABLE"},
+                data:{saleId:legacySale.id,description:`Payment received for ${legacySale.invoiceNumber}`},
+              });
+              repairedResult = {amount:amount.toString(),allocated:amount.toString(),advance:"0",customerId:input.customerId,repairedAdvance:true};
+              openSales = [];
+            } else {
+              openSales = [legacySale];
+            }
+          } else if (exact.length > 1) {
+            throw new Error("I found multiple unassigned sales with that exact due. Please choose the invoice before I apply the payment.");
+          }
+        }
+
         let remaining = amount;
         for (const sale of openSales) {
           if (remaining.lte(0)) break;
@@ -79,7 +130,7 @@ export async function receivePayment(input:{businessId:string;userId?:string;cus
           const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,amount:remaining,method:normalizePaymentMethod(input.method),kind:PaymentKind.ADVANCE,occurredAt:input.occurredAt || new Date(),notes:input.notes || "Customer advance",source:input.source || "manual"}});
           await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,paymentId:p.id,type:"RECEIVABLE",debit:new D(0),credit:remaining,description:"Customer advance",occurredAt:p.occurredAt}});
         }
-        return { amount: amount.toString(), allocated: amount.sub(remaining).toString(), advance: remaining.toString(), customerId:input.customerId };
+        return repairedResult || { amount: amount.toString(), allocated: amount.sub(remaining).toString(), advance: remaining.toString(), customerId:input.customerId };
       }
     }
     if (input.supplierId) { const supplier=await tx.supplier.findFirst({where:{id:input.supplierId,businessId:input.businessId,archived:false}}); if(!supplier) throw new Error("Supplier is not part of this business."); kind = PaymentKind.SUPPLIER_PAYMENT; }

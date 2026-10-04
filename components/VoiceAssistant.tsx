@@ -40,6 +40,8 @@ export default function VoiceAssistant() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const processingRef = useRef(false);
   const mountedRef = useRef(true);
+  const wakeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeStopRef = useRef(false);
 
   useEffect(() => { enabledRef.current = enabled; pendingRef.current = pending; }, [enabled, pending]);
 
@@ -281,53 +283,88 @@ export default function VoiceAssistant() {
     cleanupCapture();
     stopSpeaking();
     try { localStorage.setItem("hisabflow.voiceMode", "off"); } catch {}
+    // Re-arm the wake listener immediately after the user turns live voice off.
+    wakeStopRef.current = false;
+    try { window.dispatchEvent(new Event("hisabflow:wake-rearm")); } catch {}
   }, [cleanupCapture, stopSpeaking]);
 
   const startWakeWord = useCallback(() => {
     const Recognition = getSpeechRecognition();
-    if (!Recognition || enabledRef.current || speechRef.current) return;
+    if (!Recognition || enabledRef.current || speechRef.current || wakeStopRef.current || !mountedRef.current) return;
+    if (wakeRetryRef.current) { clearTimeout(wakeRetryRef.current); wakeRetryRef.current = null; }
     try {
       const recognition = new Recognition();
       speechRef.current = recognition;
       recognition.continuous = true;
       recognition.interimResults = true;
+      recognition.maxAlternatives = 3;
       recognition.lang = LANGUAGE_CODES[language] || "en-IN";
       recognition.onresult = (event: any) => {
         let transcript = "";
         for (let i = event.resultIndex; i < event.results.length; i++) transcript += ` ${event.results[i][0].transcript}`;
-        if (/\b(?:hi|hey|hai|hello|hay)\s+(?:hisab|hisaab|hesab)(?:\s+flow)?\b/i.test(transcript)) {
+        const heard = transcript.trim().toLowerCase();
+        // Browser speech recognition can render the wake phrase as "hii",
+        // "high", "hisaab" or "hesab". Treat those as wake aliases, but
+        // do not activate on a bare "hi" so normal conversation is ignored.
+        if (/\b(?:hi+|hey|hai|hello|hay|high)\s+(?:hisab|hisaab|hesab|hisaab)\b(?:\s+flow)?/i.test(heard)) {
+          wakeStopRef.current = true;
           try { recognition.stop(); } catch {}
           speechRef.current = null;
-          activate();
+          void activate();
         }
       };
-      recognition.onerror = () => { speechRef.current = null; };
-      recognition.onend = () => {
+      const restart = () => {
         speechRef.current = null;
-        if (!enabledRef.current) setTimeout(() => startWakeWord(), 700);
+        if (!enabledRef.current && !wakeStopRef.current && mountedRef.current) {
+          wakeRetryRef.current = setTimeout(() => startWakeWord(), 700);
+        }
       };
+      recognition.onerror = (event: any) => {
+        // not-allowed/no-speech/network are recoverable for a wake listener.
+        // Keep retrying instead of permanently disabling wake mode after the
+        // first browser recognition error.
+        if (event?.error === "not-allowed" || event?.error === "service-not-allowed") {
+          wakeRetryRef.current = setTimeout(() => startWakeWord(), 2500);
+        } else {
+          restart();
+        }
+      };
+      recognition.onend = restart;
       recognition.start();
-    } catch { speechRef.current = null; }
+    } catch {
+      speechRef.current = null;
+      if (!enabledRef.current && !wakeStopRef.current && mountedRef.current) {
+        wakeRetryRef.current = setTimeout(() => startWakeWord(), 1200);
+      }
+    }
   }, [activate, language]);
 
   useEffect(() => {
     mountedRef.current = true;
+    wakeStopRef.current = false;
+    const rearm = () => {
+      wakeStopRef.current = false;
+      if (!enabledRef.current && !speechRef.current) startWakeWord();
+    };
+    window.addEventListener("hisabflow:wake-rearm", rearm);
     try {
-      if (localStorage.getItem("hisabflow.voiceMode") === "on") {
-        // Browsers may block microphone reactivation after a full reload. We expose
-        // the wake phrase/manual control instead of pretending permission exists.
-        setMessages([{ role: "assistant", text: "Hi Hisab voice mode is ready. Say “Hi Hisab” or press the voice button to resume." }]);
-        startWakeWord();
-      } else {
-        startWakeWord();
-      }
+      const remembered = localStorage.getItem("hisabflow.voiceMode") === "on";
+      setMessages([{ role: "assistant", text: remembered ? "Hi Hisab is ready. Say “Hi Hisab” and I’ll start listening automatically." : "Say “Hi Hisab” anytime to start voice mode." }]);
+      // Wake recognition is deliberately armed while the app is open. Once the
+      // browser has granted microphone/speech permission it can react without a
+      // mic-button click; errors/end events continuously re-arm it.
+      startWakeWord();
     } catch { startWakeWord(); }
     return () => {
       mountedRef.current = false;
+      wakeStopRef.current = true;
+      if (wakeRetryRef.current) clearTimeout(wakeRetryRef.current);
+      wakeRetryRef.current = null;
       enabledRef.current = false;
       cleanupCapture();
       try { speechRef.current?.stop(); } catch {}
       speechRef.current = null;
+      window.removeEventListener("hisabflow:wake-rearm", rearm);
       stopSpeaking();
     };
   }, [cleanupCapture, startWakeWord, stopSpeaking]);

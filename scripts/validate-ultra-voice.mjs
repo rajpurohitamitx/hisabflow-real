@@ -9,6 +9,8 @@ const required = [
   "app/api/voice/transcribe/route.ts",
   "app/api/ai/execute/route.ts",
   "lib/ai/interpret.ts",
+  "lib/services/business.ts",
+  "components/SalesClient.tsx",
   ".env.production.example",
 ];
 const errors = [];
@@ -27,9 +29,15 @@ for (const [needle, label] of [
   ["conversationId: \"hi-hisab\"", "persistent voice conversation"],
   ["VoiceAssistant", "global app-shell voice assistant"],
 ]) if (!voice.includes(needle) && !shell.includes(needle)) errors.push(`Missing ${label}`);
+const business = fs.readFileSync(path.join(root, "lib/services/business.ts"), "utf8");
+const execute = fs.readFileSync(path.join(root, "app/api/ai/execute/route.ts"), "utf8");
+const sales = fs.readFileSync(path.join(root, "components/SalesClient.tsx"), "utf8");
 if (!transcribe.includes("gemini-3.5-transcribe")) errors.push("Gemini 3.5 transcription model is not present in the voice route.");
 if (!transcribe.includes("x-goog-upload-command") || !transcribe.includes("/v1beta/interactions")) errors.push("Documented Gemini Files/Interactions transcription flow is incomplete.");
 if (!env.includes('GEMINI_MODEL="gemini-3.5-flash-lite"')) errors.push("Example Gemini semantic model is not set to Gemini 3.5.");
 if (!env.includes('GEMINI_TRANSCRIBE_MODEL="gemini-3.5-transcribe"')) errors.push("Example Gemini transcription model is missing.");
+if (!business.includes("applyToOutstanding") || !business.includes("balanceDue.eq(amount)")) errors.push("Outstanding-payment allocation/legacy walk-in repair is missing.");
+if (!execute.includes("I won't save this as a walk-in sale")) errors.push("CREATE_SALE customer guard is missing.");
+if (!sales.includes("/app/sales/${s.id}")) errors.push("Sales rows are not clickable.");
 if (errors.length) { console.error(errors.join("\n")); process.exit(1); }
 console.log("Ultra voice validation passed: wake phrase, persistent voice assistant, Gemini transcription, and app-shell integration are present.");
