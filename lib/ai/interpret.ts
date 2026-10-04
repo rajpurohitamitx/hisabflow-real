@@ -45,6 +45,30 @@ function displayQuantity(quantity:number, unit:string){
   return `${quantity.toLocaleString('en-IN',{maximumFractionDigits:3})} ${unit}`;
 }
 
+function escapeRegExp(value:string){ return value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); }
+function explicitProductQuantity(text:string, productName:string){
+  const source=String(text||"").replace(/,/g,"");
+  const name=escapeRegExp(productName.trim());
+  const unit="(?:kg|kgs|kilo|kilos|kilogram|kilograms|g|gm|gms|gram|grams|mg|milligram|milligrams|pieces?|pcs?|units?)";
+  const patterns=[
+    new RegExp("(?:^|\\b)(\\d+(?:\\.\\d+)?)\\s*("+unit+")?\\s*(?:of\\s+)?"+name+"(?:s)?\\b","i"),
+    new RegExp("(?:^|\\b)"+name+"(?:s)?\\s*(?:x|\\*|:)?\\s*(\\d+(?:\\.\\d+)?)\\s*("+unit+")?\\b","i")
+  ];
+  for(const re of patterns){ const m=source.match(re); if(m) return {quantity:Number(m[1]),unit:m[2]||undefined}; }
+  return undefined;
+}
+function explicitProductAmount(text:string, productName:string){
+  const source=String(text||"").replace(/,/g,"");
+  const name=escapeRegExp(productName.trim());
+  const money="(?:₹|rs\\.?|inr\\s*)?\\s*(\\d+(?:\\.\\d+)?)\\s*(k|thousand|thousands)?";
+  const patterns=[
+    new RegExp(money+"\\s*(?:worth\\s+of|worth)\\s+"+name+"(?:s)?\\b","i"),
+    new RegExp(name+"(?:s)?\\s*(?:worth|value)\\s*(?:of|is|=|:)\\s*"+money,"i")
+  ];
+  for(const re of patterns){ const m=source.match(re); if(m){ const raw=m[1]||m[2]; if(raw==null) continue; let amount=Number(raw); const full=m[0].toLowerCase(); if(/\b(k|thousand|thousands)\b/.test(full)) amount*=1000; return amount; } }
+  return undefined;
+}
+
 function amountFromText(text:string){
   const cleaned=text.toLowerCase().replace(/,/g,"");
   const k=cleaned.match(/(?:₹|rs\.?|inr\s*)?(\d+(?:\.\d+)?)\s*k\b/); if(k) return Number(k[1])*1000;
@@ -213,27 +237,50 @@ Conversation context: ${JSON.stringify(context||{})}`;
         else if(r.matches.length!==1){ parsed.needsClarification=true; parsed.response=parsed.response||`Which product do you mean by ${parsed.entities.productName}?`; }
       }
       if(Array.isArray(parsed.entities.items)){
-        const resolved=[];
+        const resolved:any[]=[];
         for(const rawItem of parsed.entities.items){
-          const item={...rawItem};
-          const r=await resolveProduct(businessId,String(item.productName||item.name||""));
+          const item:any={...rawItem};
+          const productQuery=String(item.productName||item.name||"").trim();
+          const r=await resolveProduct(businessId,productQuery);
           if(r.selected){
-            const product=r.selected;
-            item.productId=product.id; item.productName=product.name; item.unit=product.unit; item.sellingPrice=Number(product.sellingPrice||0);
-            const explicitAmount=item.amount!=null?Number(item.amount):(parsed.intent==='CREATE_SALE' && parsed.entities.amount!=null && parsed.entities.items.length===1?Number(parsed.entities.amount):undefined);
-            let quantity=item.quantity==null?undefined:Number(item.quantity);
-            const spokenUnit=String(item.quantityUnit||item.unitName||'').trim()||undefined;
-            if(quantity!=null && Number.isFinite(quantity) && spokenUnit) quantity=quantityToStoredUnit(quantity,spokenUnit,String(product.unit||'piece'));
-            if((quantity==null || !Number.isFinite(quantity) || quantity<=0) && explicitAmount!=null && explicitAmount>0 && Number(product.sellingPrice)>0){
-              quantity=explicitAmount/Number(product.sellingPrice);
-              item.quantity=quantity; item.quantityUnit=product.unit; item.calculatedFromAmount=true; item.amount=explicitAmount;
-            } else if(quantity!=null && quantity>0 && (explicitAmount==null || !Number.isFinite(explicitAmount)) && Number(product.sellingPrice)>0){
-              item.quantity=quantity; item.amount=quantity*Number(product.sellingPrice); item.calculatedFromQuantity=true;
-              if(parsed.entities.items.length===1 && parsed.entities.amount==null) parsed.entities.amount=item.amount;
-            } else if(quantity!=null && quantity>0 && explicitAmount!=null){
-              item.quantity=quantity; item.amount=explicitAmount;
+            const product:any=r.selected;
+            item.productId=product.id;
+            item.productName=product.name;
+            item.unit=product.unit;
+            item.sellingPrice=Number(product.sellingPrice||0);
+
+            // Numeric values in the user's actual sentence are authoritative.
+            // Never let the language model turn "500 grams" into "500 kg" or
+            // invent a value such as "2 20". Prices always come from the DB.
+            const explicitQty=explicitProductQuantity(text,String(product.name));
+            const explicitValue=explicitProductAmount(text,String(product.name));
+            if(explicitQty){
+              item.quantity=quantityToStoredUnit(explicitQty.quantity,explicitQty.unit,String(product.unit||"piece"));
+              item.quantityUnit=product.unit;
+              item.amount=Number(product.sellingPrice)>0 ? Number(item.quantity)*Number(product.sellingPrice) : undefined;
+              item.calculatedFromQuantity=true;
+            } else if(explicitValue!=null && Number(product.sellingPrice)>0){
+              item.quantity=explicitValue/Number(product.sellingPrice);
+              item.quantityUnit=product.unit;
+              item.amount=explicitValue;
+              item.calculatedFromAmount=true;
+            } else {
+              let quantity=item.quantity==null?undefined:Number(item.quantity);
+              const explicitAmount=item.amount!=null?Number(item.amount):(parsed.intent==='CREATE_SALE' && parsed.entities.amount!=null && parsed.entities.items.length===1?Number(parsed.entities.amount):undefined);
+              const spokenUnit=String(item.quantityUnit||item.unitName||"").trim()||undefined;
+              if(quantity!=null && Number.isFinite(quantity) && spokenUnit) quantity=quantityToStoredUnit(quantity,spokenUnit,String(product.unit||"piece"));
+              if((quantity==null || !Number.isFinite(quantity) || quantity<=0) && explicitAmount!=null && explicitAmount>0 && Number(product.sellingPrice)>0){
+                quantity=explicitAmount/Number(product.sellingPrice);
+                item.quantity=quantity; item.quantityUnit=product.unit; item.amount=explicitAmount; item.calculatedFromAmount=true;
+              } else if(quantity!=null && quantity>0 && Number(product.sellingPrice)>0){
+                item.quantity=quantity; item.amount=quantity*Number(product.sellingPrice); item.calculatedFromQuantity=true;
+              } else if(quantity!=null && quantity>0 && explicitAmount!=null){
+                item.quantity=quantity; item.amount=explicitAmount;
+              }
             }
-            item.displayQuantity=item.quantity!=null?displayQuantity(Number(item.quantity),String(product.unit||'piece')):undefined;
+            item.rate=Number(product.sellingPrice||0);
+            item.unitPrice=Number(product.sellingPrice||0);
+            item.displayQuantity=item.quantity!=null?displayQuantity(Number(item.quantity),String(product.unit||"piece")):undefined;
           } else {
             item.productMatches=r.matches.map((x:any)=>({id:x.id,name:x.name,sku:x.sku,stock:String(x.stock),unit:x.unit,sellingPrice:Number(x.sellingPrice||0)}));
           }
@@ -270,9 +317,10 @@ Conversation context: ${JSON.stringify(context||{})}`;
         if(!parsed.needsClarification){
           parsed.requiresConfirmation=true;
           const customer=e.customerName||e.customerQuery||e.proposedCustomerName;
-          const itemText=Array.isArray(e.items)?e.items.map((x:any)=>`${x.displayQuantity||x.quantity} × ${x.productName||x.name||"item"}${x.unitPrice!=null?` at ₹${x.unitPrice}`:x.sellingPrice!=null?` at ₹${Number(x.sellingPrice).toLocaleString("en-IN")}/${x.unit||"unit"}`:""}`).join(", "):"";
-          const derivedAmount=Array.isArray(e.items)?e.items.reduce((sum:number,x:any)=>sum+(x.amount!=null?Number(x.amount):(x.quantity!=null&&x.sellingPrice!=null?Number(x.quantity)*Number(x.sellingPrice):0)),0):0;
-          const amount=e.amount!=null?`₹${Number(e.amount).toLocaleString("en-IN")}`:(derivedAmount>0?`₹${derivedAmount.toLocaleString("en-IN")}`:"");
+          const itemText=Array.isArray(e.items)?e.items.map((x:any)=>`${x.displayQuantity||x.quantity} × ${x.productName||x.name||"item"}${x.rate!=null?` at ₹${Number(x.rate).toLocaleString("en-IN")}/${x.unit||"unit"}`:x.sellingPrice!=null?` at ₹${Number(x.sellingPrice).toLocaleString("en-IN")}/${x.unit||"unit"}`:""}`).join(", "):"";
+          const derivedAmount=Array.isArray(e.items)?e.items.reduce((sum:number,x:any)=>sum+(x.quantity!=null&&x.rate!=null?Number(x.quantity)*Number(x.rate):x.amount!=null?Number(x.amount):0),0):0;
+          if(Array.isArray(e.items) && derivedAmount>0) e.amount=derivedAmount;
+          const amount=derivedAmount>0?`₹${derivedAmount.toLocaleString("en-IN")}`:"";
           const payment=e.payment!=null?`₹${Number(e.payment).toLocaleString("en-IN")} paid`:"";
           const method=e.paymentMethod?` via ${String(e.paymentMethod).toLowerCase()}`:"";
           if(parsed.intent==="RECEIVE_PAYMENT") parsed.response=`I understood: ${customer||"the customer"} ${e.createCustomer?"will be added and ":""}will pay ${amount}${method}. Should I record it?`;

@@ -79,7 +79,7 @@ export async function receivePayment(input:{businessId:string;userId?:string;cus
           const p = await tx.payment.create({data:{businessId:input.businessId,customerId:input.customerId,amount:remaining,method:normalizePaymentMethod(input.method),kind:PaymentKind.ADVANCE,occurredAt:input.occurredAt || new Date(),notes:input.notes || "Customer advance",source:input.source || "manual"}});
           await tx.ledgerEntry.create({data:{businessId:input.businessId,customerId:input.customerId,paymentId:p.id,type:"RECEIVABLE",debit:new D(0),credit:remaining,description:"Customer advance",occurredAt:p.occurredAt}});
         }
-        return { amount: amount.toString(), allocated: amount.sub(remainingAfter(openSales, amount)).toString(), customerId:input.customerId };
+        return { amount: amount.toString(), allocated: amount.sub(remaining).toString(), advance: remaining.toString(), customerId:input.customerId };
       }
     }
     if (input.supplierId) { const supplier=await tx.supplier.findFirst({where:{id:input.supplierId,businessId:input.businessId,archived:false}}); if(!supplier) throw new Error("Supplier is not part of this business."); kind = PaymentKind.SUPPLIER_PAYMENT; }

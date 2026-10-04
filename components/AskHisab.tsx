@@ -52,7 +52,14 @@ export default function AskHisab(){
  function stopSpeaking(){audioRef.current?.pause();if("speechSynthesis" in window)speechSynthesis.cancel();setSpeaking(false)}
  async function send(value=text, pendingOverride?:any){
    if(!value.trim()||busy)return;
-   const clean=value.trim();setText("");setMsgs(m=>[...m,{role:"user",text:clean}]);setBusy(true);
+   const clean=value.trim();
+   const yes=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|u confirm it|you confirm it|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/i.test(clean);
+   if(yes && pending && !pending.auto && pending.actionId){
+     setText(""); setMsgs(m=>[...m,{role:"user",text:clean}]);
+     await execute(true);
+     return;
+   }
+   setText("");setMsgs(m=>[...m,{role:"user",text:clean}]);setBusy(true);
    try{
      const r=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:clean,conversationId:'main',pendingContext:pendingOverride||((pending&&!pending.auto&&clean.split(/\s+/).length<=12)?{intent:pending.result?.intent,entities:pending.result?.entities,question:pending.result?.response}:null)})});
      const d=await r.json();if(!r.ok)throw new Error(d.error||'Something went wrong.');
