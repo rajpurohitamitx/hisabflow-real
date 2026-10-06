@@ -19,6 +19,7 @@ export async function POST(req:Request){
     const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
 
     const pending:any=conversation.pendingAction||null;
+    const lastExecuted=await db.aIAction.findFirst({where:{businessId:s.businessId,status:"EXECUTED"},orderBy:{createdAt:"desc"},select:{intent:true,result:true}});
 
     // A pending financial action is NOT a global mode. Every new utterance gets a
     // fresh interpretation first. Only explicit confirmation/cancellation, a clear
@@ -32,9 +33,11 @@ export async function POST(req:Request){
       return NextResponse.json({actionId:pending.actionId,conversationId,result:{intent:pending.intent,entities:pending.entities,confidence:{intent:1},risk:"LOW",response:"Do you want me to cancel the pending action?",requiresConfirmation:false,needsClarification:true},pending});
     }
 
-    if(pending?.actionId && affirmative){
+    if(pending?.actionId && affirmative && pending.status==="WAITING_CONFIRMATION"){
       const action=await db.aIAction.findFirst({where:{id:String(pending.actionId),businessId:s.businessId}});
-      if(action && action.status!="EXECUTED"){
+      const pendingEntities:any=pending.entities||{};
+      const unresolved=Boolean(pendingEntities.customerResolution==="CREATE_OR_CONFIRM" && !pendingEntities.customerId) || Boolean(pendingEntities.productMatches?.length && !pendingEntities.productId);
+      if(action && action.status!=="EXECUTED" && !unresolved){
         const result={intent:action.intent,entities:action.entities as any,confidence:action.confidence as any,risk:action.risk,response:"Confirmed. Applying the pending action now.",requiresConfirmation:true,needsClarification:false};
         await db.conversationMessage.createMany({data:[{conversationId:conversation.id,role:"user",text},{conversationId:conversation.id,role:"assistant",text:"Confirmed. Applying the pending action now."}]});
         return NextResponse.json({actionId:action.id,conversationId,result,pendingConfirmed:true});
@@ -54,13 +57,14 @@ export async function POST(req:Request){
       customerId:conversation.customerId,
       productId:conversation.productId,
       lastIntent:conversation.lastIntent,
-      history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text}))
+      history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text})),
+      lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null
     });
 
     // Read-only requests always win over pending mutation state.
     const readOnlyIntents=new Set([
       "CUSTOMER_BALANCE","CUSTOMER_STATEMENT","CUSTOMER_TOP_TRANSACTIONS",
-      "SALES_TODAY","LOW_STOCK","DAILY_BRIEFING","OUTSTANDING_CUSTOMERS",
+      "SALES_TODAY","SALES_ON_DATE","LOW_STOCK","DAILY_BRIEFING","OUTSTANDING_CUSTOMERS",
       "SUPPLIER_DUES","PROFIT_SUMMARY","SEARCH_BUSINESS","SEARCH_REMINDERS",
       "GENERAL_BUSINESS_QUERY","SALES_ANALYSIS"
     ]);
@@ -88,7 +92,8 @@ export async function POST(req:Request){
           pendingIntent:pending.intent,
           pendingEntities:pending.entities,
           pendingQuestion:pending.question,
-          history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text}))
+          history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text})),
+          lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null
         });
         result=patched;
         continuingPending=true;

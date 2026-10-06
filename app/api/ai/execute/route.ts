@@ -32,6 +32,19 @@ async function bindCustomer(businessId:string,e:any,allowCreate:boolean){
 
 function OP_SAFE_CREATE(op:string){ return op === "CREATE"; }
 
+function dateRangeFromText(input:string){
+  const t=String(input||"").trim().toLowerCase();
+  const now=new Date();
+  const base=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  if(/\byesterday\b/.test(t)) { const d=new Date(base); d.setDate(d.getDate()-1); return {start:d,end:new Date(d.getFullYear(),d.getMonth(),d.getDate()+1)}; }
+  if(/\btoday\b/.test(t)) return {start:base,end:new Date(base.getFullYear(),base.getMonth(),base.getDate()+1)};
+  const m=t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)(?:\s+(20\d{2}))?\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:,?\s*(20\d{2}))?\b/i);
+  if(!m) return null;
+  const months:any={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+  const day=Number(m[1]||m[5]); const mon=months[String(m[2]||m[4]).toLowerCase()]; const year=Number(m[3]||m[6]||now.getFullYear());
+  const d=new Date(year,mon,day); return {start:d,end:new Date(year,mon,day+1)};
+}
+
 async function bindSupplier(businessId:string,e:any){
   let supplierId=typeof e.supplierId==="string"?e.supplierId:undefined;
   const supplierName=String(e.supplierName||e.supplierQuery||"").trim();
@@ -53,8 +66,22 @@ export async function POST(req:Request){
   try{
     const s=await requireSession(); const body=await req.json(); const actionId=String(body.actionId||""); requestActionId=actionId; const confirmed=Boolean(body.confirmed); const entitiesOverride=body.entitiesOverride&&typeof body.entitiesOverride==="object"?body.entitiesOverride:null;
     const action=await db.aIAction.findFirst({where:{id:actionId,businessId:s.businessId}}); if(!action) return NextResponse.json({error:"AI action not found."},{status:404});
+    // Idempotent execution: the UI can legitimately send the same confirmation twice
+    // (for example, a voice confirmation and a button/event retry). Once one request
+    // has claimed the action as CONFIRMED, the other request must wait briefly for
+    // the first transaction to finish instead of telling the shopkeeper to wait.
+    // This prevents the confusing "already being processed" message while still
+    // ensuring the accounting action executes exactly once.
     if(action.status==="EXECUTED") return NextResponse.json({ok:true,result:action.result});
-    if(action.status==="CONFIRMED") return NextResponse.json({error:"This action is already being processed. Please wait for the result."},{status:409});
+    if(action.status==="CONFIRMED") {
+      for(let i=0;i<20;i++){
+        await new Promise(r=>setTimeout(r,150));
+        const fresh=await db.aIAction.findUnique({where:{id:action.id},select:{status:true,result:true}});
+        if(fresh?.status==="EXECUTED") return NextResponse.json({ok:true,result:fresh.result,idempotent:true});
+        if(fresh?.status==="FAILED"||fresh?.status==="REJECTED") return NextResponse.json({error:"The action did not complete and was not recorded."},{status:409});
+      }
+      return NextResponse.json({error:"The action is taking longer than expected. It has not been duplicated."},{status:409});
+    }
     if(action.risk!=="LOW"&&!confirmed) return NextResponse.json({error:"Confirmation required before this financial action.",requiresConfirmation:true,action},{status:409});
     const claimed=await db.aIAction.updateMany({where:{id:action.id,businessId:s.businessId,status:"INTERPRETED"},data:{status:"CONFIRMED"}});
     if(claimed.count!==1){
@@ -185,6 +212,15 @@ export async function POST(req:Request){
       case "CUSTOMER_BALANCE":
         if(!e.customerId) return NextResponse.json({error:"Which customer do you mean?",matches:e.matches||[]},{status:409});
         result={message:`${e.customerName||"Customer"} outstanding is ${money(await customerBalance(s.businessId,e.customerId))}.`}; break;
+      case "SALES_ON_DATE": {
+        const range=dateRangeFromText(String(e.dateText||e.query||""));
+        if(!range) return NextResponse.json({error:"I couldn't determine the sales date."},{status:409});
+        const rows=await db.sale.findMany({where:{businessId:s.businessId,status:"CONFIRMED",occurredAt:{gte:range.start,lt:range.end}},include:{customer:{select:{name:true}},items:{select:{nameSnapshot:true,quantity:true,lineTotal:true}}},orderBy:{occurredAt:"asc"},take:100});
+        const total=rows.reduce((a,x)=>a+Number(x.total||0),0);
+        const lines=rows.map((x:any,i:number)=>`${i+1}. ${x.invoiceNumber||x.id.slice(-8)} — ${money(Number(x.total))}${x.customer?.name?` — ${x.customer.name}`:""}`).join("\n");
+        result={message:rows.length?`Sales for ${e.dateText}: ${money(total)} across ${rows.length} invoice(s).\n${lines}`:`No confirmed sales were recorded for ${e.dateText}.`,sales:rows,total,dateText:e.dateText};
+        break;
+      }
       case "SALES_TODAY":
         {const d=await dashboardSummary(s.businessId);result={message:`Today's confirmed sales are ${money(d.sales)} across ${d.salesCount} invoices.`};} break;
       case "LOW_STOCK":
@@ -192,7 +228,7 @@ export async function POST(req:Request){
       case "DAILY_BRIEFING":
         {const d=await dashboardSummary(s.businessId);result={message:`Today: ${money(d.sales)} sales, ${money(d.received)} received, ${money(d.outstanding)} outstanding, ${d.lowStock} low-stock products and ${d.overdue} overdue invoices.`,summary:d};} break;
       case "OUTSTANDING_CUSTOMERS":
-        {const rows=await db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{id:true,name:true,phone:true},take:100});const enriched=await Promise.all(rows.map(async c=>({ ...c, outstanding:Number(await customerBalance(s.businessId,c.id)) })));const customers=enriched.filter(x=>x.outstanding>0).sort((a,b)=>b.outstanding-a.outstanding).slice(0,25);result={message:customers.length?`${customers.length} customers have outstanding balances.`:"No customer balances are currently outstanding.",customers};} break;
+        {const rows=await db.customer.findMany({where:{businessId:s.businessId,archived:false},select:{id:true,name:true,phone:true},take:100});const enriched=await Promise.all(rows.map(async c=>({ ...c, outstanding:Number(await customerBalance(s.businessId,c.id)) })));const customers=enriched.filter(x=>x.outstanding>0).sort((a,b)=>b.outstanding-a.outstanding).slice(0,25);const detailed=Boolean(e.details);const lines=customers.map((x:any,i:number)=>`${i+1}. ${x.name} — ${money(x.outstanding)}`).join("\n");result={message:customers.length?(detailed?`${customers.length} customers have outstanding balances:\n${lines}`:`${customers.length} customers have outstanding balances.`):`No customer balances are currently outstanding.`,customers};} break;
       case "SUPPLIER_DUES":
         {const rows=await db.supplier.findMany({where:{businessId:s.businessId,archived:false},select:{id:true,name:true,phone:true},take:100});const suppliers=await Promise.all(rows.map(async x=>{const [p,paid]=await Promise.all([db.purchase.aggregate({where:{businessId:s.businessId,supplierId:x.id},_sum:{total:true}}),db.payment.aggregate({where:{businessId:s.businessId,supplierId:x.id,kind:"SUPPLIER_PAYMENT"},_sum:{amount:true}})]);return {...x,outstanding:Number(p._sum.total||0)-Number(paid._sum.amount||0)}}));result={message:"Supplier balances calculated from recorded purchases and payments.",suppliers:suppliers.filter(x=>x.outstanding>0).sort((a,b)=>b.outstanding-a.outstanding)};} break;
       case "SALES_ANALYSIS": {
