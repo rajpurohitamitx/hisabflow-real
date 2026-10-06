@@ -1,22 +1,24 @@
-import { PrismaClient, Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-const db=new PrismaClient();
-async function main(){
-  const email="owner@hisabflow.local";
-  const passwordHash=await bcrypt.hash("HisabFlow@123",12);
-  const user=await db.user.upsert({where:{email},update:{},create:{name:"Amit",email,passwordHash}});
-  const business=await db.business.upsert({where:{id:"demo-business"},update:{},create:{id:"demo-business",name:"Amit Silver & General Store",businessType:"jewellery",gstEnabled:true}});
-  await db.membership.upsert({where:{userId_businessId:{userId:user.id,businessId:business.id}},update:{role:"OWNER"},create:{userId:user.id,businessId:business.id,role:"OWNER"}});
-  const branch=await db.branch.upsert({where:{businessId_code:{businessId:business.id,code:"MAIN"}},update:{},create:{businessId:business.id,name:"Chennai Main Branch",code:"MAIN",isMain:true}});
-  await db.industryConfig.upsert({where:{businessId:business.id},update:{},create:{businessId:business.id,industry:"jewellery",fields:{metal:true,purity:true,grossWeight:true,netWeight:true,makingCharge:true,wastage:true,itemCode:true},rules:{requireConfirmationAbove:10000,highValueThreshold:50000,trackPurity:true},vocabulary:{"silver chain":"Silver Chain","chain":"Silver Chain","ring":"Silver Ring"},workflows:{dailyOpening:true,dailyClosing:true,collectionSweep:true,stockReview:true},templates:{invoice:"jewellery-default",statement:"customer-default"}}});
-  const ramesh=await db.customer.upsert({where:{id:"demo-customer-ramesh"},update:{},create:{id:"demo-customer-ramesh",businessId:business.id,branchId:branch.id,name:"Ramesh Kumar",phone:"9876543210"}});
-  const chain=await db.product.upsert({where:{id:"demo-product-chain"},update:{stock:new Prisma.Decimal(10)},create:{id:"demo-product-chain",businessId:business.id,branchId:branch.id,name:"Silver Chain",sku:"SIL-CHAIN-001",unit:"piece",purchasePrice:new Prisma.Decimal(18000),sellingPrice:new Prisma.Decimal(24000),stock:new Prisma.Decimal(10),reorderPoint:new Prisma.Decimal(3),gstRate:new Prisma.Decimal(3)}});
-  const ring=await db.product.upsert({where:{id:"demo-product-ring"},update:{},create:{id:"demo-product-ring",businessId:business.id,branchId:branch.id,name:"Silver Ring",sku:"SIL-RING-001",unit:"piece",purchasePrice:new Prisma.Decimal(5000),sellingPrice:new Prisma.Decimal(7500),stock:new Prisma.Decimal(18),reorderPoint:new Prisma.Decimal(5),gstRate:new Prisma.Decimal(3)}});
-  const existing=await db.sale.findFirst({where:{businessId:business.id,customerId:ramesh.id,invoiceNumber:"INV-DEMO-001"}});
-  if(!existing){const sale=await db.sale.create({data:{businessId:business.id,branchId:branch.id,customerId:ramesh.id,invoiceNumber:"INV-DEMO-001",subtotal:new Prisma.Decimal(48000),tax:new Prisma.Decimal(0),discount:new Prisma.Decimal(0),total:new Prisma.Decimal(48000),amountPaid:new Prisma.Decimal(20000),balanceDue:new Prisma.Decimal(28000),items:{create:{productId:chain.id,nameSnapshot:chain.name,quantity:new Prisma.Decimal(2),rate:new Prisma.Decimal(24000),lineTotal:new Prisma.Decimal(48000)}}}});await db.product.update({where:{id:chain.id},data:{stock:new Prisma.Decimal(8)}});await db.inventoryMovement.create({data:{businessId:business.id,branchId:branch.id,productId:chain.id,saleId:sale.id,type:"SALE",quantity:new Prisma.Decimal(-2),beforeStock:new Prisma.Decimal(10),afterStock:new Prisma.Decimal(8),referenceType:"SALE",referenceId:sale.id}});const p=await db.payment.create({data:{businessId:business.id,branchId:branch.id,customerId:ramesh.id,saleId:sale.id,amount:new Prisma.Decimal(20000),method:"CASH",kind:"CUSTOMER_RECEIPT",source:"seed"}});await db.paymentAllocation.create({data:{paymentId:p.id,saleId:sale.id,amount:new Prisma.Decimal(20000)}});await db.ledgerEntry.createMany({data:[{businessId:business.id,customerId:ramesh.id,saleId:sale.id,type:"RECEIVABLE",debit:new Prisma.Decimal(48000),credit:new Prisma.Decimal(0),description:"Sale INV-DEMO-001"},{businessId:business.id,customerId:ramesh.id,paymentId:p.id,saleId:sale.id,type:"RECEIVABLE",debit:new Prisma.Decimal(0),credit:new Prisma.Decimal(20000),description:"Payment received"}]});}
-  await db.businessMemory.upsert({where:{businessId_key:{businessId:business.id,key:"one box"}},update:{value:"12 pieces"},create:{businessId:business.id,key:"one box",value:"12 pieces"}});
-  await db.alias.upsert({where:{businessId_normalized:{businessId:business.id,normalized:"chain"}},update:{productId:chain.id,value:"chain"},create:{businessId:business.id,productId:chain.id,value:"chain",normalized:"chain"}});
-  await db.alias.upsert({where:{businessId_normalized:{businessId:business.id,normalized:"ramesh"}},update:{customerId:ramesh.id,value:"Ramesh"},create:{businessId:business.id,customerId:ramesh.id,value:"Ramesh",normalized:"ramesh"}});
-  console.log(`Seeded ${email} / HisabFlow@123`);
+import { resetDemoBusiness } from "../lib/demo-reset";
+import { seedDemoBusiness } from "../lib/demo-seed";
+
+const db = new PrismaClient();
+
+async function main() {
+  const email = "owner@hisabflow.local";
+  const passwordHash = await bcrypt.hash("HisabFlow@123", 12);
+  const user = await db.user.upsert({ where: { email }, update: {}, create: { name: "Amit", email, passwordHash } });
+  const existing = await db.business.findUnique({ where: { id: "demo-business" } });
+  if (existing) {
+    const marker = await db.businessMemory.findUnique({ where: { businessId_key: { businessId: existing.id, key: "demo.seed.v1" } } });
+    if (marker?.active) await resetDemoBusiness(db, existing.id);
+  } else {
+    await db.business.create({ data: { id: "demo-business", name: "Amit Silver & General Store", businessType: "jewellery", gstEnabled: true } });
+  }
+  await db.membership.upsert({ where: { userId_businessId: { userId: user.id, businessId: "demo-business" } }, update: { role: "OWNER" }, create: { userId: user.id, businessId: "demo-business", role: "OWNER" } });
+  await seedDemoBusiness(db, "demo-business", user.id);
+  console.log(`Clean demo database ready: ${email} / HisabFlow@123`);
 }
-main().finally(()=>db.$disconnect());
+
+main().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => db.$disconnect());
