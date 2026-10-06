@@ -5,7 +5,7 @@ import { interpret } from "@/lib/ai/interpret";
 import { Prisma } from "@prisma/client";
 
 const AFFIRM=/^(yes|yeah|yep|yup|ok|okay|sure|confirm|confirmed|confirm it|confirm this|do it|go ahead|proceed|haan|ha|ji|bilkul|theek|ठीक|हाँ|हां|जी|ஆம்|ஆமாம்|சரி|అవును|ಹೌದು|അതെ|હા|हो)$/iu;
-const NEG=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના|leave)$/iu;
+const NEG=/^(no|nope|cancel|stop|not this|nah|nahi|nahin|नहीं|नही|இல்லை|కాదు|ಇಲ್ಲ|ഇಲ್ಲ|ના)$/iu;
 
 export async function POST(req:Request){
   try{
@@ -19,6 +19,11 @@ export async function POST(req:Request){
     const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
 
     const pending:any=conversation.pendingAction||null;
+    // A vague "leave" is never a destructive command. If an action is pending,
+    // ask whether the user wants to cancel it instead of guessing.
+    if(pending?.actionId && /^leave$/iu.test(text)){
+      return NextResponse.json({actionId:pending.actionId,conversationId,result:{intent:pending.intent,entities:pending.entities,confidence:{intent:1},risk:"LOW",response:"Do you want me to cancel the pending action?",requiresConfirmation:false,needsClarification:true},pending});
+    }
     // Confirmation/cancellation is handled against the persisted action, not reinterpreted.
     if(pending?.actionId && AFFIRM.test(text)){
       const action=await db.aIAction.findFirst({where:{id:String(pending.actionId),businessId:s.businessId}});
@@ -30,6 +35,7 @@ export async function POST(req:Request){
     }
     if(pending?.actionId && NEG.test(text)){
       await db.conversation.update({where:{id:conversation.id},data:{pendingAction:Prisma.DbNull,lastIntent:"CANCELLED"}});
+      await db.aIAction.updateMany({where:{id:String(pending.actionId),businessId:s.businessId,status:{not:"EXECUTED"}},data:{status:"REJECTED"}});
       await db.conversationMessage.createMany({data:[{conversationId:conversation.id,role:"user",text},{conversationId:conversation.id,role:"assistant",text:"Okay, I won’t make that change."}]});
       return NextResponse.json({actionId:pending.actionId,conversationId,result:{intent:"UNKNOWN",entities:{cancelled:true},confidence:{intent:1},risk:"LOW",response:"Okay, I won’t make that change.",requiresConfirmation:false,needsClarification:false},cancelled:true});
     }
@@ -58,9 +64,19 @@ export async function POST(req:Request){
       actionId=action.id;
     }
 
-    const mutation=result.risk!=="LOW" || result.requiresConfirmation || ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","MANAGE_ENTITY"].includes(result.intent);
-    const readyForConfirmation=mutation && !result.needsClarification;
-    const nextPending=readyForConfirmation?{actionId,intent:result.intent,entities:result.entities,question:result.response||"Confirm this action.",status:"WAITING_CONFIRMATION",updatedAt:new Date().toISOString()}:null;
+    const mutation=result.risk!=="LOW" || result.requiresConfirmation || ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","MANAGE_ENTITY","DELETE_CUSTOMER"].includes(result.intent);
+    // NEVER discard an unresolved mutation. Clarifications are part of the same
+    // pending operation: the next user message patches this action rather than
+    // starting a new one. This is the core fix for repeated reminder/customer
+    // questions and context loss.
+    const nextPending=mutation?{
+      actionId,
+      intent:result.intent,
+      entities:result.entities,
+      question:result.response||"Tell me the missing detail.",
+      status:result.needsClarification?"WAITING_INPUT":"WAITING_CONFIRMATION",
+      updatedAt:new Date().toISOString()
+    }:null;
 
     await db.conversationMessage.createMany({data:[{conversationId:conversation.id,role:"user",text},{conversationId:conversation.id,role:"assistant",text:result.response||""}]});
     const ce:any=result.entities||{};

@@ -69,6 +69,27 @@ function explicitProductAmount(text:string, productName:string){
   return undefined;
 }
 
+function indiaDateWithOffset(days:number, hour=0, minute=0){
+  const now=new Date();
+  const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Kolkata",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(now);
+  const y=Number(parts.find(x=>x.type==="year")?.value); const m=Number(parts.find(x=>x.type==="month")?.value); const d=Number(parts.find(x=>x.type==="day")?.value);
+  const utc=Date.UTC(y,m-1,d+days,hour,minute,0);
+  return new Date(utc-330*60*1000).toISOString();
+}
+function normalizeReminderRelativeDate(text:string, existing:any){
+  const t=String(text||"").toLowerCase();
+  const fields={...(existing&&typeof existing==="object"?existing:{})};
+  if(!fields.dueAt && !fields.dueDate){
+    const tm=t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+    let hour=0, minute=0;
+    if(tm){ hour=Number(tm[1]); minute=Number(tm[2]||0); const ap=(tm[3]||"").toLowerCase(); if(ap==="pm"&&hour<12)hour+=12; if(ap==="am"&&hour===12)hour=0; }
+    if(/\btoday\b|\btonight\b/.test(t)||/\bஇன்று\b/.test(t)) fields.dueAt=indiaDateWithOffset(0,hour,minute);
+    else if(/\btomorrow\b|\bநாளை\b/.test(t)) fields.dueAt=indiaDateWithOffset(1,hour,minute);
+    else if(/\bday after tomorrow\b/.test(t)) fields.dueAt=indiaDateWithOffset(2,hour,minute);
+  }
+  return fields;
+}
+
 function amountFromText(text:string){
   const cleaned=text.toLowerCase().replace(/,/g,"");
   const k=cleaned.match(/(?:₹|rs\.?|inr\s*)?(\d+(?:\.\d+)?)\s*k\b/); if(k) return Number(k[1])*1000;
@@ -250,6 +271,13 @@ Conversation context: ${JSON.stringify(context||{})}`;
       parsed.entities ||= {};
       parsed.confidence ||= {};
       parsed.needsClarification=Boolean(parsed.needsClarification);
+      // Resolve relative reminder dates from the user's words, not the model's
+      // hidden calendar assumptions. Default to India time because Hisab is an
+      // India-first product; an explicit business timezone can replace this later.
+      if(parsed.intent==="CREATE_REMINDER" || (parsed.intent==="MANAGE_ENTITY" && String(parsed.entities.entityType||"").toUpperCase()==="REMINDER")){
+        parsed.entities.fields=normalizeReminderRelativeDate(text,parsed.entities.fields);
+        if(parsed.entities.fields.dueAt) delete parsed.entities.fields.dueDate;
+      }
 
       // Conversational confirmation/selection: carry the unresolved operation forward
       // so replies like "yes", "haan", "ஆம்" or "Jinal Adyar" are answers to the

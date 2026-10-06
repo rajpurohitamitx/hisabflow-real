@@ -32,12 +32,40 @@ async function bindCustomer(businessId:string,e:any,allowCreate:boolean){
 
 function OP_SAFE_CREATE(op:string){ return op === "CREATE"; }
 
+async function bindSupplier(businessId:string,e:any){
+  let supplierId=typeof e.supplierId==="string"?e.supplierId:undefined;
+  const supplierName=String(e.supplierName||e.supplierQuery||"").trim();
+  if(supplierName){
+    const exact=await db.supplier.findMany({where:{businessId,archived:false,name:{equals:supplierName,mode:"insensitive"}},take:5});
+    if(exact.length>1) return {error:`I found multiple suppliers named ${supplierName}. Please choose one.`,matches:exact.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}))};
+    if(exact.length===1){supplierId=exact[0].id;e.supplierName=exact[0].name;}
+    else return {error:`I couldn't find ${supplierName}. I won't use another supplier.`,requiresSupplier:true,proposedSupplierName:supplierName};
+  } else if(supplierId){
+    const row=await db.supplier.findFirst({where:{id:supplierId,businessId,archived:false},select:{id:true,name:true}});
+    if(!row)return {error:"The selected supplier no longer exists. Please choose the supplier again.",requiresSupplier:true};
+    e.supplierName=row.name;
+  }
+  return {supplierId};
+}
+
 export async function POST(req:Request){
+  let requestActionId="";
   try{
-    const s=await requireSession(); const {actionId,confirmed=false}=await req.json();
+    const s=await requireSession(); const body=await req.json(); const actionId=String(body.actionId||""); requestActionId=actionId; const confirmed=Boolean(body.confirmed); const entitiesOverride=body.entitiesOverride&&typeof body.entitiesOverride==="object"?body.entitiesOverride:null;
     const action=await db.aIAction.findFirst({where:{id:actionId,businessId:s.businessId}}); if(!action) return NextResponse.json({error:"AI action not found."},{status:404});
     if(action.status==="EXECUTED") return NextResponse.json({ok:true,result:action.result});
+    if(action.status==="CONFIRMED") return NextResponse.json({error:"This action is already being processed. Please wait for the result."},{status:409});
     if(action.risk!=="LOW"&&!confirmed) return NextResponse.json({error:"Confirmation required before this financial action.",requiresConfirmation:true,action},{status:409});
+    const claimed=await db.aIAction.updateMany({where:{id:action.id,businessId:s.businessId,status:"INTERPRETED"},data:{status:"CONFIRMED"}});
+    if(claimed.count!==1){
+      const fresh=await db.aIAction.findUnique({where:{id:action.id}});
+      if(fresh?.status==="EXECUTED") return NextResponse.json({ok:true,result:fresh.result});
+      return NextResponse.json({error:"This action is already being processed or is no longer executable."},{status:409});
+    }
+    if(entitiesOverride){
+      await db.aIAction.update({where:{id:action.id},data:{entities:entitiesOverride as any}});
+      action.entities=entitiesOverride as any;
+    }
     const e=action.entities as any; let result:any;
     // Resolve the customer from the action's CURRENT explicit name before every
     // customer-sensitive operation. This blocks stale conversation IDs.
@@ -45,6 +73,11 @@ export async function POST(req:Request){
     const boundCustomer=await bindCustomer(s.businessId,e,allowCustomerCreate);
     if((boundCustomer as any).error && ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CUSTOMER_STATEMENT","CUSTOMER_BALANCE","CUSTOMER_TOP_TRANSACTIONS","CREATE_REMINDER","DELETE_CUSTOMER"].includes(action.intent)) return NextResponse.json(boundCustomer,{status:409});
     if((boundCustomer as any).customerId){ e.customerId=(boundCustomer as any).customerId; e.customerName=(boundCustomer as any).customerName; }
+    if(["CREATE_PURCHASE"].includes(action.intent)){
+      const boundSupplier=await bindSupplier(s.businessId,e);
+      if((boundSupplier as any).error) return NextResponse.json(boundSupplier,{status:409});
+      if((boundSupplier as any).supplierId) e.supplierId=(boundSupplier as any).supplierId;
+    }
     if(action.intent === "MANAGE_ENTITY") {
       const op=String(e.operation||"UPDATE").toUpperCase();
       const type=String(e.entityType||"").toUpperCase();
@@ -96,6 +129,8 @@ export async function POST(req:Request){
       }
       await db.aIAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
       await db.auditLog.create({data:{businessId:s.businessId,userId:s.user.id,actorType:"AI",action:"AI_ACTION_EXECUTED",entityType:"AIAction",entityId:action.id,after:result as any}});
+      const conversations=await db.conversation.findMany({where:{businessId:s.businessId},select:{id:true,pendingAction:true}});
+      await Promise.all(conversations.filter((c:any)=>c.pendingAction&&String(c.pendingAction.actionId||"")===action.id).map((c:any)=>db.conversation.update({where:{id:c.id},data:{pendingAction:Prisma.DbNull}})));
       return NextResponse.json({ok:true,result});
     }
     switch(action.intent){
@@ -222,6 +257,13 @@ export async function POST(req:Request){
     }
     await db.aIAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
     await db.auditLog.create({data:{businessId:s.businessId,userId:s.user.id,actorType:"AI",action:"AI_ACTION_EXECUTED",entityType:"AIAction",entityId:action.id,after:result as any}});
+    const conversations=await db.conversation.findMany({where:{businessId:s.businessId},select:{id:true,pendingAction:true}});
+    await Promise.all(conversations.filter((c:any)=>c.pendingAction&&String(c.pendingAction.actionId||"")===action.id).map((c:any)=>db.conversation.update({where:{id:c.id},data:{pendingAction:Prisma.DbNull}})));
     return NextResponse.json({ok:true,result});
-  }catch(e:any){return NextResponse.json({error:e.message},{status:400});}
+  }catch(e:any){
+    if(requestActionId){
+      try{ await db.aIAction.updateMany({where:{id:requestActionId,status:"CONFIRMED"},data:{status:"FAILED",result:{error:String(e?.message||e)}}}); }catch{}
+    }
+    return NextResponse.json({error:e.message},{status:400});
+  }
 }

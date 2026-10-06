@@ -1,0 +1,20 @@
+{
+  "version": "V15",
+  "purpose": "Golden semantic cases for Hisab Flow's conversation engine",
+  "cases": [
+    {"name":"payment-not-sale","input":"he paid 3k","mustNotIntent":"CREATE_SALE","expectedIntent":"RECEIVE_PAYMENT"},
+    {"name":"read-only-balance","input":"how much was due for him","expectedIntent":"CUSTOMER_BALANCE","mustMutate":false},
+    {"name":"purchase-search","input":"Show purchases above 50,000","expectedIntent":"SEARCH_BUSINESS","mustMutate":false},
+    {"name":"reminder-first-turn","input":"remind me today that I have to order 500 pieces of biscuits","expectedIntent":"CREATE_REMINDER","mustPersistPending":true},
+    {"name":"reminder-patch","input":"today is due date and title is biscuit reminder","expected":"PATCH_PENDING_ACTION","mustPreserveOriginalTask":true},
+    {"name":"confirmation","input":"yes","expected":"CONFIRM_PENDING_ACTION","mustNotReinterpret":true},
+    {"name":"customer-override","input":"Ram ne 1.5kg bajra liya","mustNotUsePreviousCustomerId":true},
+    {"name":"customer-correction","input":"not ramesh its a new customer ram","expected":"PATCH_PENDING_ACTION"},
+    {"name":"ambiguous-customer","input":"Ramesh paid 5000","expected":"ASK_WHICH_CUSTOMER_IF_MULTIPLE"},
+    {"name":"no-invented-payment","input":"clear Arjun's outstanding","expected":"SETTLE_OUTSTANDING","mustCalculateActualDue":true,"mustConfirm":true},
+    {"name":"vague-leave","input":"leave","expected":"ASK_CANCEL_OR_CONTINUE","mustNotArchive":true},
+    {"name":"date-current-year","input":"biscuit reminder due 04 oct 18:00 pm","expectedYear":"CURRENT_BUSINESS_YEAR","expectedTime":"18:00"},
+    {"name":"amount-to-quantity","input":"give 750 rupees worth of Bajra","expected":"quantityFromStoredSellingPrice"},
+    {"name":"quantity-to-amount","input":"give 750g Bajra","expected":"amountFromStoredSellingPrice"}
+  ]
+}
