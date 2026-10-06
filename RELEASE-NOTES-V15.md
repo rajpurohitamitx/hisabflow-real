@@ -37,3 +37,16 @@ AI interprets and proposes. The deterministic business services execute. Postgre
 - `node scripts/validate-architecture.mjs` — PASS
 - `node scripts/validate-ai-regression-contract.mjs` — PASS (9 architecture checks, 14 golden cases)
 - Full `npm install` / production TypeScript build could not be completed in this runtime because dependency installation timed out. Do not treat this release as a claim that Vercel/npm production compilation has been independently verified here.
+
+## V16 hotfix — conversation state and read-query isolation
+
+- New utterances are interpreted without stale pending mutation context first.
+- Read-only requests cannot be hijacked by a pending financial action.
+- Deterministic `OUTSTANDING_CUSTOMERS` routing for customer-balance lists.
+- Deterministic `SEARCH_REMINDERS` routing for reminder queries.
+- Added reminder search execution.
+- Bulk delete/reset/clear requests for customers, balances, payments or financial history are refused safely.
+- Safe read-only queries are auto-executed in Ask Hisab; they no longer appear as confirmation cards.
+- Pending action is reused only for actual confirmation or likely field-level continuation.
+- Customer outstanding is never displayed as negative; overpayments are advances, not negative due.
+- Regression contract added: `scripts/validate-conversation-regressions.mjs`.

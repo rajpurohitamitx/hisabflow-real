@@ -177,6 +177,11 @@ export async function POST(req:Request){
         result={message:`Top ${transactions.length} highest-value transactions for ${e.customerName||"the customer"}:\n${lines||"No transactions found."}`,customer:e.customerName||null,transactions};
         break;
       }
+      case "SEARCH_REMINDERS": {
+        const rows=await db.reminder.findMany({where:{businessId:s.businessId,status:{not:"CANCELLED"}},orderBy:{dueAt:"asc"},take:25});
+        result={message:rows.length?rows.map((r:any,i:number)=>`${i+1}. ${r.title} — ${new Date(r.dueAt).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}${r.notes?` — ${r.notes}`:""}`).join("\n"):"You have no saved reminders.",reminders:rows};
+        break;
+      }
       case "CUSTOMER_BALANCE":
         if(!e.customerId) return NextResponse.json({error:"Which customer do you mean?",matches:e.matches||[]},{status:409});
         result={message:`${e.customerName||"Customer"} outstanding is ${money(await customerBalance(s.businessId,e.customerId))}.`}; break;
