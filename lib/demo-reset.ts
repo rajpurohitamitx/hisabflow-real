@@ -15,7 +15,7 @@ export async function resetDemoBusiness(db: PrismaClient, businessId: string) {
   // Delete leaf/transaction records first, then their parents.
   await db.workflowRun.deleteMany({ where: { businessId } });
   await db.entityResolutionEvent.deleteMany({ where: { businessId } });
-  await db.aiInsight.deleteMany({ where: { businessId } });
+  await db.aIInsight.deleteMany({ where: { businessId } });
   await db.paymentLink.deleteMany({ where: { businessId } });
   await db.recurringTransaction.deleteMany({ where: { businessId } });
   await db.cashSession.deleteMany({ where: { businessId } });
@@ -30,7 +30,7 @@ export async function resetDemoBusiness(db: PrismaClient, businessId: string) {
   await db.document.deleteMany({ where: { businessId } });
   await db.automation.deleteMany({ where: { businessId } });
   await db.auditLog.deleteMany({ where: { businessId } });
-  await db.aiAction.deleteMany({ where: { businessId } });
+  await db.aIAction.deleteMany({ where: { businessId } });
   await db.conversation.deleteMany({ where: { businessId } });
   await db.alias.deleteMany({ where: { businessId } });
   await db.businessMemory.deleteMany({ where: { businessId } });
