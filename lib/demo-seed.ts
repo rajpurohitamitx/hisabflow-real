@@ -33,18 +33,34 @@ export async function seedDemoBusiness(db: PrismaClient, businessId: string, use
     ["Karthik Rao", "9876543214", "Tambaram"],
   ].map(([name, phone, address]) => db.customer.create({ data: { businessId, branchId: branch.id, name, phone, address } })));
 
-  const products = await Promise.all([
-    ["Bajra", "BAJRA-001", "kg", 400, 300, 40, 10, "Grains"],
-    ["Jawar", "JAWAR-001", "kg", 680, 520, 35, 8, "Grains"],
-    ["Biscuits", "BISC-001", "piece", 20, 12, 200, 50, "Grocery"],
-    ["Rice", "RICE-001", "kg", 70, 48, 100, 25, "Grocery"],
-    ["Silver Chain", "SIL-CHAIN-001", "piece", 24000, 19000, 12, 3, "Jewellery"],
-    ["Silver Ring", "SIL-RING-001", "piece", 7500, 5000, 18, 5, "Jewellery"],
-  ].map(([name, sku, unit, sell, cost, stock, reorder, category]) =>
-    db.product.create({
-      data: { businessId, branchId: branch.id, name, sku, unit, sellingPrice: D(sell as number), purchasePrice: D(cost as number), stock: D(stock as number), reorderPoint: D(reorder as number), category: category as string, gstRate: D(3) },
-    }),
-  );
+  const productSeed: Array<{ name: string; sku: string; unit: string; sell: number; cost: number; stock: number; reorder: number; category: string }> = [
+    { name: "Bajra", sku: "BAJRA-001", unit: "kg", sell: 400, cost: 300, stock: 40, reorder: 10, category: "Grains" },
+    { name: "Jawar", sku: "JAWAR-001", unit: "kg", sell: 680, cost: 520, stock: 35, reorder: 8, category: "Grains" },
+    { name: "Biscuits", sku: "BISC-001", unit: "piece", sell: 20, cost: 12, stock: 200, reorder: 50, category: "Grocery" },
+    { name: "Rice", sku: "RICE-001", unit: "kg", sell: 70, cost: 48, stock: 100, reorder: 25, category: "Grocery" },
+    { name: "Silver Chain", sku: "SIL-CHAIN-001", unit: "piece", sell: 24000, cost: 19000, stock: 12, reorder: 3, category: "Jewellery" },
+    { name: "Silver Ring", sku: "SIL-RING-001", unit: "piece", sell: 7500, cost: 5000, stock: 18, reorder: 5, category: "Jewellery" },
+  ];
+
+  const products: Prisma.ProductGetPayload<{}>[] = [];
+  for (const item of productSeed) {
+    const product = await db.product.create({
+      data: {
+        businessId,
+        branchId: branch.id,
+        name: item.name,
+        sku: item.sku,
+        unit: item.unit,
+        sellingPrice: D(item.sell),
+        purchasePrice: D(item.cost),
+        stock: D(item.stock),
+        reorderPoint: D(item.reorder),
+        category: item.category,
+        gstRate: D(3),
+      },
+    });
+    products.push(product);
+  }
 
   for (const p of products) {
     await db.inventoryMovement.create({
