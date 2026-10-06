@@ -112,7 +112,12 @@ async function resolveCustomer(businessId:string, query:string){
     return {...c,_score:score};
   }).filter((x:any)=>x._score>0).sort((a:any,b:any)=>b._score-a._score);
   const top=scored[0]?scored[0]._score:0; const topMatches=scored.filter((x:any)=>x._score===top).slice(0,8);
-  const selected=topMatches.length===1 && top>=.99 ? topMatches[0] : null;
+  // Demo/import data can contain duplicate customer rows. If every exact-name
+  // candidate has the same non-empty phone number, treat them as one identity
+  // cluster rather than forcing the owner to choose the same person repeatedly.
+  const phones=topMatches.map((x:any)=>String(x.phone||'').trim()).filter(Boolean);
+  const samePhone=topMatches.length>1 && phones.length===topMatches.length && new Set(phones).size===1;
+  const selected=topMatches.length===1 && top>=.99 ? topMatches[0] : samePhone && top>=.99 ? topMatches[0] : null;
   return {matches:topMatches,selected,confidence:selected?top:0};
 }
 
@@ -145,6 +150,18 @@ export async function interpret(businessId:string,text:string,context?:{
   const bareText=String(text||"").trim();
   if(/^(leave|ignore|never mind|forget it|let it go)$/i.test(bareText) && !context?.pendingIntent){
     return Interpretation.parse({intent:"UNKNOWN",entities:{cancelled:false},confidence:{intent:1},risk:"LOW",response:"Okay. I won’t change anything.",requiresConfirmation:false,needsClarification:false});
+  }
+  // Deterministic read routers run BEFORE conversation/pending logic. These are
+  // safe queries: they must never inherit a stale mutation or become a confirmation.
+  if(/^\s*(show|list|give|tell)\b.*\b(customers?|clients?)\b.*\b(balance|balances|due|outstanding|owe|owing|money)\b/i.test(bareText) ||
+     /^\s*(who|which)\b.*\b(customers?|clients?)\b.*\b(owe|owing|due|outstanding|balance)\b/i.test(bareText)){
+    return Interpretation.parse({intent:"OUTSTANDING_CUSTOMERS",entities:{query:bareText},confidence:{intent:.99},risk:"LOW",response:"I’ll show the customers who currently have outstanding balances.",requiresConfirmation:false,needsClarification:false});
+  }
+  if(/^\s*(what|which|show|list|tell|remind)\b.*\b(reminder|reminders)\b/i.test(bareText) || /^\s*what was (my )?reminder\b/i.test(bareText)){
+    return Interpretation.parse({intent:"SEARCH_REMINDERS",entities:{query:bareText},confidence:{intent:.99},risk:"LOW",response:"I’ll check your saved reminders.",requiresConfirmation:false,needsClarification:false});
+  }
+  if(/\b(delete|remove|erase|reset|clear)\b/i.test(bareText) && /\b(all|every|everyone|customers?|balances?|due|outstanding|payments?|history|records?)\b/i.test(bareText)){
+    return Interpretation.parse({intent:"UNKNOWN",entities:{destructiveRequest:true},confidence:{intent:1},risk:"HIGH",response:"I won’t delete or reset all customer balances or historical financial records. I can show the outstanding balances, settle a specific customer, or help reverse a specific transaction.",requiresConfirmation:false,needsClarification:false});
   }
   if(/\b(how much|what is|tell me)\b.*\b(due|outstanding|balance)\b/i.test(bareText) && context?.customerId){
     return Interpretation.parse({intent:"CUSTOMER_BALANCE",entities:{customerId:context.customerId},confidence:{intent:.99,customer:.99},risk:"LOW",response:"I’ll check the current outstanding balance.",requiresConfirmation:false,needsClarification:false});

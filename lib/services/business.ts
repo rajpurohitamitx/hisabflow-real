@@ -184,7 +184,10 @@ export async function customerBalance(businessId:string, customerId:string) {
     db.ledgerEntry.aggregate({where:{businessId,customerId,type:"RECEIVABLE"},_sum:{debit:true}}),
     db.ledgerEntry.aggregate({where:{businessId,customerId,type:"RECEIVABLE"},_sum:{credit:true}}),
   ]);
-  return new D(debits._sum.debit || 0).sub(credits._sum.credit || 0);
+  const net=new D(debits._sum.debit || 0).sub(credits._sum.credit || 0);
+  // "Outstanding" is an amount the customer still owes. A credit surplus is an
+  // advance/overpayment and must not appear as a negative due balance.
+  return net.gt(0) ? net : new D(0);
 }
 
 export async function dashboardSummary(businessId:string) {
