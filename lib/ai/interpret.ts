@@ -5,6 +5,7 @@ import { z } from "zod";
 import { db } from "../db";
 import { normalize } from "../utils";
 import { resolveEntityAdvanced } from "./advanced";
+import { trainingExamplesForPrompt } from "./training-data";
 
 export const Interpretation = z.object({
   intent: z.string(),
@@ -145,6 +146,7 @@ export async function interpret(businessId:string,text:string,context?:{
   pendingEntities?:Record<string,any>|null;
   pendingQuestion?:string|null;
   history?:Array<{role:string;text:string}>;
+  lastResult?:any;
 }):Promise<Interpretation>{
   const memories=await db.businessMemory.findMany({where:{businessId,active:true},take:50});
   const bareText=String(text||"").trim();
@@ -242,6 +244,38 @@ export async function interpret(businessId:string,text:string,context?:{
     return Interpretation.parse({intent:"DELETE_CUSTOMER",entities:{customerQuery:q,customerName:q,customerResolution:"CREATE_OR_CONFIRM",matches:r.matches.map((x:any)=>({id:x.id,name:x.name,phone:x.phone}))},confidence:{intent:.95,customer:.8},risk:"HIGH",response:`I couldn't find a customer named ${q}. I won't remove anyone.`,requiresConfirmation:false,needsClarification:true});
   }
 
+  // Deterministic conversational selection: ordinal replies such as “2nd” or “first one”
+  // answer the currently displayed candidate list instead of being sent back to the model.
+  if(context?.pendingEntities){
+    const ord=bareText.match(/\b(\d+)(?:st|nd|rd|th)\b|\b(first|second|third|fourth|fifth)\b/i);
+    const idx=ord ? (ord[1]?Number(ord[1])-1:{first:0,second:1,third:2,fourth:3,fifth:4}[String(ord[2]).toLowerCase()]??-1) : -1;
+    const candidateSets=[
+      {key:"productMatches",type:"product",intent:context.pendingIntent},
+      {key:"matches",type:"customer",intent:context.pendingIntent}
+    ];
+    if(idx>=0){
+      const set=candidateSets.find(x=>Array.isArray((context.pendingEntities as any)[x.key]) && (context.pendingEntities as any)[x.key].length>idx);
+      if(set){
+        const chosen=(context.pendingEntities as any)[set.key][idx];
+        const entities:any={...(context.pendingEntities as any)};
+        if(set.type==="product"){
+          entities.productId=chosen.id; entities.productName=chosen.name; entities.productUnit=chosen.unit; entities.sellingPrice=Number(chosen.sellingPrice||0);
+          if(Array.isArray(entities.items)){ entities.items=entities.items.map((it:any)=>({...it,productId:chosen.id,productName:chosen.name,unit:chosen.unit,sellingPrice:Number(chosen.sellingPrice||0)})); }
+        } else { entities.customerId=chosen.id; entities.customerName=chosen.name; entities.customerQuery=chosen.name; entities.customerResolution="RESOLVED"; entities.createCustomer=false; }
+        return Interpretation.parse({intent:context.pendingIntent||"UNKNOWN",entities,confidence:{intent:.99,selection:.99},risk:"MEDIUM",response:"Selection received. Please confirm this action.",requiresConfirmation:true,needsClarification:false});
+      }
+    }
+  }
+
+  const lastResult=context?.lastResult;
+  if(lastResult?.intent==="OUTSTANDING_CUSTOMERS" && /^(names?|show (them|their names)|show names|show their names|names and balance|balance (amount|amt)|amounts?)$/i.test(bareText)){
+    return Interpretation.parse({intent:"OUTSTANDING_CUSTOMERS",entities:{query:"outstanding customers",details:true},confidence:{intent:.99,context:.99},risk:"LOW",response:"I’ll show the customer names and their outstanding amounts.",requiresConfirmation:false,needsClarification:false});
+  }
+  const dateSales=/^(?:show |what (?:was|were) |tell me )?(?:the )?(?:sales?|sale)(?: on| for| of)?\s*(yesterday|today|\d{1,2}(?:st|nd|rd|th)?\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)(?:\s+20\d{2})?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2}(?:,?\s+20\d{2})?)\s*$/i.exec(bareText);
+  if(dateSales){
+    return Interpretation.parse({intent:"SALES_ON_DATE",entities:{dateText:dateSales[1]},confidence:{intent:.99,date:.98},risk:"LOW",response:`I’ll check confirmed sales for ${dateSales[1]}.`,requiresConfirmation:false,needsClarification:false});
+  }
+
   if(isLocalAIEnabled() || isGeminiEnabled() || process.env.OPENAI_API_KEY){
     try {
       const systemPrompt=`You are the universal natural-language interpretation layer for Hisab Flow, an AI business operating assistant for Indian small businesses.
@@ -272,9 +306,8 @@ Return ONLY valid JSON with this exact top-level shape:
 
 If clarification is needed, response MUST be the exact short question the UI should ask. Set needsClarification=true. If a new customer should be proposed, include customerResolution="CREATE_OR_CONFIRM" and proposedCustomerName. If confirmation is needed, response should clearly state what will happen and ask for confirmation.
 
-Business memory: ${JSON.stringify(memories.map(m=>({key:m.key,value:m.value})))}
-Recent conversation history: ${JSON.stringify(context?.history||[])}
-Conversation context: ${JSON.stringify(context||{})}`;
+Semantic training examples (use these as meaning examples, not rigid commands):\n${trainingExamplesForPrompt()}\n\nBusiness memory: ${JSON.stringify(memories.map(m=>({key:m.key,value:m.value})))}\nRecent conversation history: ${JSON.stringify(context?.history||[])}
+Conversation context: ${JSON.stringify(context||{})}\nLast structured business result: ${JSON.stringify(context?.lastResult||null)}`;
 
       let parsed:any;
       if(isLocalAIEnabled()) parsed=await ollamaJson([{role:"system",content:systemPrompt},{role:"user",content:text}]);

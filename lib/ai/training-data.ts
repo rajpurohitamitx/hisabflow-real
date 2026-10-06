@@ -1,0 +1,133 @@
+/**
+ * Hisab Flow semantic training/few-shot corpus.
+ * This is NOT model-weight training. It is a versioned semantic reference set
+ * injected into the interpreter so the model sees many natural ways to express
+ * the same business intent. Keep adding real failed utterances here.
+ */
+import { GOD_LEVEL_INVARIANTS, GOD_LEVEL_FAMILIES, GOD_LEVEL_SEMANTIC_EXAMPLES } from "./god-level-training";
+
+export type SemanticExample={intent:string;text:string;notes?:string};
+
+const base:SemanticExample[]=[
+ {intent:"CUSTOMER_BALANCE",text:"how much does Ramesh owe me"},
+ {intent:"CUSTOMER_BALANCE",text:"what is Ramesh's due"},
+ {intent:"CUSTOMER_BALANCE",text:"Ramesh ka kitna baki hai"},
+ {intent:"CUSTOMER_BALANCE",text:"Ramesh-ku evlo balance irukku"},
+ {intent:"CUSTOMER_BALANCE",text:"tell me Ramesh outstanding"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"show all customers who have balance"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"who owes me money"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"which customers have pending dues"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"give me all udhaar customers"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"yara kitta kaasu varanum"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"kis kis se paise lene hain"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"show their names and balance amount"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"names and amount of everyone who owes me"},
+ {intent:"CUSTOMER_STATEMENT",text:"show Ramesh full statement"},
+ {intent:"CUSTOMER_STATEMENT",text:"what did Ramesh buy and pay"},
+ {intent:"CUSTOMER_TOP_TRANSACTIONS",text:"top 10 transactions for Arjun"},
+ {intent:"CUSTOMER_TOP_TRANSACTIONS",text:"Arjun ke biggest bills dikhao"},
+ {intent:"CUSTOMER_TOP_TRANSACTIONS",text:"highest value purchases by Arjun"},
+ {intent:"RECEIVE_PAYMENT",text:"Ramesh paid 5k"},
+ {intent:"RECEIVE_PAYMENT",text:"Ramesh paid me five thousand"},
+ {intent:"RECEIVE_PAYMENT",text:"Ramesh sent 5000"},
+ {intent:"RECEIVE_PAYMENT",text:"Ramesh-ku 5k payment vandhuduchu"},
+ {intent:"RECEIVE_PAYMENT",text:"Ramesh ne 5000 rupaye diye"},
+ {intent:"RECEIVE_PAYMENT",text:"payment received from Ramesh 5k"},
+ {intent:"RECEIVE_PAYMENT",text:"he paid 3k"},
+ {intent:"RECEIVE_PAYMENT",text:"5000 received against Ramesh due"},
+ {intent:"SETTLE_OUTSTANDING",text:"clear Ramesh outstanding"},
+ {intent:"SETTLE_OUTSTANDING",text:"settle what Ramesh owes"},
+ {intent:"SETTLE_OUTSTANDING",text:"Ramesh ka pura baki clear kar do"},
+ {intent:"CREATE_SALE",text:"Ramesh took 2 boxes of biscuits"},
+ {intent:"CREATE_SALE",text:"Ramesh bought 5kg bajra"},
+ {intent:"CREATE_SALE",text:"Ramesh-ku rendu chain bill pannu"},
+ {intent:"CREATE_SALE",text:"Ramesh ne 2 chain liye"},
+ {intent:"CREATE_SALE",text:"sell 3 biscuits to Arjun"},
+ {intent:"CREATE_SALE",text:"Arjun bought 750 grams bajra"},
+ {intent:"CREATE_SALE",text:"Jinal took 200 rupees worth of bajra"},
+ {intent:"CREATE_SALE",text:"Jinal-ku 200 worth bajra kudutha"},
+ {intent:"CREATE_PURCHASE",text:"bought 20 silver chains from Metro Wholesale"},
+ {intent:"CREATE_PURCHASE",text:"purchase 50 boxes from Kumar Traders"},
+ {intent:"CREATE_PURCHASE",text:"Metro Wholesale se 20 chain kharide"},
+ {intent:"CREATE_PURCHASE",text:"supplier se 100 pieces liye"},
+ {intent:"CREATE_EXPENSE",text:"record 2500 rent expense"},
+ {intent:"CREATE_EXPENSE",text:"today electricity expense 1800"},
+ {intent:"CREATE_EXPENSE",text:"fuel ke 1200 expense mein daalo"},
+ {intent:"CREATE_REMINDER",text:"remind me tomorrow to call Nareshji"},
+ {intent:"CREATE_REMINDER",text:"tomorrow call Naresh"},
+ {intent:"CREATE_REMINDER",text:"today remind me to order 500 biscuits"},
+ {intent:"CREATE_REMINDER",text:"4 oct at 6 pm remind me to call supplier"},
+ {intent:"SEARCH_REMINDERS",text:"what reminders do I have"},
+ {intent:"SEARCH_REMINDERS",text:"show my reminders"},
+ {intent:"SEARCH_REMINDERS",text:"what was my reminder"},
+ {intent:"SALES_TODAY",text:"what are today's sales"},
+ {intent:"SALES_TODAY",text:"how much sold today"},
+ {intent:"SALES_TODAY",text:"aaj kitna sale hua"},
+ {intent:"SALES_TODAY",text:"innaiku sales evlo"},
+ {intent:"SALES_ON_DATE",text:"yesterday's sales"},
+ {intent:"SALES_ON_DATE",text:"show yesterday sale"},
+ {intent:"SALES_ON_DATE",text:"4th oct sale"},
+ {intent:"SALES_ON_DATE",text:"sales on 4 October"},
+ {intent:"SALES_ON_DATE",text:"october 4 ko kitna sale hua"},
+ {intent:"SALES_ON_DATE",text:"4 oct la enna sale pannom"},
+ {intent:"SEARCH_BUSINESS",text:"show purchases above 50000"},
+ {intent:"SEARCH_BUSINESS",text:"find purchases over 50k"},
+ {intent:"SEARCH_BUSINESS",text:"which bills are above 1 lakh"},
+ {intent:"LOW_STOCK",text:"what is low in stock"},
+ {intent:"LOW_STOCK",text:"what should I reorder"},
+ {intent:"LOW_STOCK",text:"which products are running low"},
+ {intent:"LOW_STOCK",text:"stock kam hai kya"},
+ {intent:"DAILY_BRIEFING",text:"what should I do today"},
+ {intent:"DAILY_BRIEFING",text:"give me today's business briefing"},
+ {intent:"DAILY_BRIEFING",text:"aaj kya karna chahiye"},
+ {intent:"PROFIT_SUMMARY",text:"what is my profit"},
+ {intent:"PROFIT_SUMMARY",text:"how much profit did I make"},
+ {intent:"PROFIT_SUMMARY",text:"munafa kitna hai"},
+ {intent:"SALES_ANALYSIS",text:"why did sales change this month"},
+ {intent:"SALES_ANALYSIS",text:"why did sales fall"},
+ {intent:"SALES_ANALYSIS",text:"compare this month with last month"},
+ {intent:"SALES_ANALYSIS",text:"sales kyun kam hui"},
+ {intent:"SUPPLIER_DUES",text:"how much do I owe suppliers"},
+ {intent:"SUPPLIER_DUES",text:"supplier pending payments"},
+ {intent:"ADJUST_STOCK",text:"add 20 biscuits to stock"},
+ {intent:"ADJUST_STOCK",text:"remove 5 pieces from stock"},
+ {intent:"ADJUST_STOCK",text:"stock mein 10 kg add karo"},
+ {intent:"GENERAL_BUSINESS_QUERY",text:"what happened in my business"},
+ {intent:"GENERAL_BUSINESS_QUERY",text:"give me a business summary"},
+ {intent:"GENERAL_BUSINESS_QUERY",text:"what is going on today"},
+ {intent:"MANAGE_ENTITY",text:"archive Ramesh customer"},
+ {intent:"MANAGE_ENTITY",text:"change Ramesh phone number"},
+ {intent:"MANAGE_ENTITY",text:"update biscuit selling price to 25"},
+ {intent:"MANAGE_ENTITY",text:"mark reminder complete"},
+ {intent:"UNKNOWN",text:"how are you"},
+ {intent:"UNKNOWN",text:"hello"},
+ {intent:"UNKNOWN",text:"leave"},
+ {intent:"UNKNOWN",text:"never mind"},
+];
+
+const languageVariants:SemanticExample[]=[
+ ...base.filter(x=>x.intent==="CREATE_SALE").flatMap(x=>[
+  {intent:x.intent,text:`please ${x.text}`},
+  {intent:x.intent,text:`can you ${x.text}`},
+  {intent:x.intent,text:`just ${x.text}`}
+ ]),
+ ...base.filter(x=>["CUSTOMER_BALANCE","OUTSTANDING_CUSTOMERS","RECEIVE_PAYMENT","SALES_TODAY","LOW_STOCK"].includes(x.intent)).flatMap(x=>[
+  {intent:x.intent,text:x.text.replace(/\bshow\b/gi,"show me")},
+  {intent:x.intent,text:x.text.replace(/\bwhat\b/gi,"tell me")}
+ ])
+];
+
+export const HISAB_SEMANTIC_TRAINING_DATA=[...base,...languageVariants];
+
+export function trainingExamplesForPrompt(limit=180){
+ const baseExamples=HISAB_SEMANTIC_TRAINING_DATA.slice(0,limit).map(x=>`${x.intent}: ${x.text}`);
+ const godExamples=GOD_LEVEL_SEMANTIC_EXAMPLES.slice(0,80).map(x=>`${x.family}: ${x.user}`);
+ return [
+  "SEMANTIC INVARIANTS: "+GOD_LEVEL_INVARIANTS.join(", "),
+  "SUPPORTED BUSINESS FAMILIES: "+GOD_LEVEL_FAMILIES.join(", "),
+  "CORE EXAMPLES:",
+  ...baseExamples,
+  "GOD-LEVEL REAL-WORLD EXAMPLES:",
+  ...godExamples,
+ ].join("\n");
+}
