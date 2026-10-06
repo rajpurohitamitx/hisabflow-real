@@ -119,15 +119,67 @@ const languageVariants:SemanticExample[]=[
 
 export const HISAB_SEMANTIC_TRAINING_DATA=[...base,...languageVariants];
 
+// IMPORTANT: the large named dataset is retained for regression/testing, but it is
+// deliberately NOT injected verbatim into the production model prompt. Feeding hundreds
+// of examples containing names such as Ramesh/Arjun/Jinal can make a model over-index on
+// those names even when the user's real customer is someone else. Production prompting
+// uses semantic templates with explicit entity slots instead.
+const UNIVERSAL_SEMANTIC_EXAMPLES:SemanticExample[]=[
+ {intent:"CUSTOMER_BALANCE",text:"how much does <customer> owe me"},
+ {intent:"CUSTOMER_BALANCE",text:"what is <customer>'s due / outstanding / balance"},
+ {intent:"CUSTOMER_BALANCE",text:"<customer> ka kitna baki hai"},
+ {intent:"CUSTOMER_BALANCE",text:"<customer>-ku evlo balance irukku"},
+ {intent:"CUSTOMER_STATEMENT",text:"show me everything for <customer>"},
+ {intent:"CUSTOMER_STATEMENT",text:"what did <customer> buy and pay"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"who owes me money"},
+ {intent:"OUTSTANDING_CUSTOMERS",text:"which customers have pending dues"},
+ {intent:"RECEIVE_PAYMENT",text:"<customer> paid <amount>"},
+ {intent:"RECEIVE_PAYMENT",text:"<amount> received from <customer>"},
+ {intent:"RECEIVE_PAYMENT",text:"<customer> ne <amount> diye"},
+ {intent:"RECEIVE_PAYMENT",text:"<customer>-ku <amount> payment vandhuduchu"},
+ {intent:"RECEIVE_PAYMENT",text:"<customer> paid <amount> against the outstanding"},
+ {intent:"RECEIVE_PAYMENT",text:"he/she paid <amount>"},
+ {intent:"SETTLE_OUTSTANDING",text:"clear <customer>'s full outstanding"},
+ {intent:"SETTLE_OUTSTANDING",text:"settle what <customer> owes"},
+ {intent:"CREATE_SALE",text:"<customer> bought <quantity> <product>"},
+ {intent:"CREATE_SALE",text:"sell <quantity> <product> to <customer>"},
+ {intent:"CREATE_SALE",text:"<customer> took <amount> worth of <product>"},
+ {intent:"CREATE_SALE",text:"<customer>-ku <quantity> <product> bill pannu"},
+ {intent:"CREATE_SALE",text:"<customer> ne <quantity> <product> liya"},
+ {intent:"CREATE_PURCHASE",text:"bought <quantity> <product> from <supplier>"},
+ {intent:"CREATE_PURCHASE",text:"purchase <quantity> <product> from <supplier>"},
+ {intent:"CREATE_EXPENSE",text:"record <amount> expense for <category>"},
+ {intent:"CREATE_EXPENSE",text:"<amount> <category> expense mein daalo"},
+ {intent:"CREATE_REMINDER",text:"remind me <date/time> to <task>"},
+ {intent:"CREATE_REMINDER",text:"today remind me to <task>"},
+ {intent:"SEARCH_REMINDERS",text:"what reminders do I have"},
+ {intent:"SALES_TODAY",text:"how much did I sell today"},
+ {intent:"SALES_ON_DATE",text:"show sales on <date>"},
+ {intent:"SEARCH_BUSINESS",text:"show purchases above <amount>"},
+ {intent:"SEARCH_BUSINESS",text:"find bills over <amount>"},
+ {intent:"LOW_STOCK",text:"what is low in stock"},
+ {intent:"LOW_STOCK",text:"what should I reorder"},
+ {intent:"PROFIT_SUMMARY",text:"how is my profit"},
+ {intent:"SALES_ANALYSIS",text:"why did sales go up/down"},
+ {intent:"SALES_ANALYSIS",text:"explain why this month changed"},
+ {intent:"CUSTOMER_TOP_TRANSACTIONS",text:"top <n> transactions for <customer>"},
+ {intent:"SEARCH_BUSINESS",text:"find the invoice / purchase / sale from <date>"},
+ {intent:"GENERAL_BUSINESS_QUERY",text:"what should I do today"},
+ {intent:"GENERAL_BUSINESS_QUERY",text:"show me the important things I need to handle"},
+ {intent:"MANAGE_ENTITY",text:"add a new customer called <customer>"},
+ {intent:"MANAGE_ENTITY",text:"update <customer>'s phone/address/details"},
+ {intent:"MANAGE_ENTITY",text:"archive <customer>"},
+ {intent:"ADJUST_STOCK",text:"add/remove <quantity> <product> from stock"},
+ {intent:"ADJUST_STOCK",text:"stock mein <quantity> <product> adjust karo"},
+];
+
 export function trainingExamplesForPrompt(limit=180){
- const baseExamples=HISAB_SEMANTIC_TRAINING_DATA.slice(0,limit).map(x=>`${x.intent}: ${x.text}`);
- const godExamples=GOD_LEVEL_SEMANTIC_EXAMPLES.slice(0,80).map(x=>`${x.family}: ${x.user}`);
+ const examples=UNIVERSAL_SEMANTIC_EXAMPLES.slice(0,limit).map(x=>`${x.intent}: ${x.text}`);
  return [
   "SEMANTIC INVARIANTS: "+GOD_LEVEL_INVARIANTS.join(", "),
   "SUPPORTED BUSINESS FAMILIES: "+GOD_LEVEL_FAMILIES.join(", "),
-  "CORE EXAMPLES:",
-  ...baseExamples,
-  "GOD-LEVEL REAL-WORLD EXAMPLES:",
-  ...godExamples,
+  "UNIVERSAL SEMANTIC EXAMPLES (angle-bracket values are arbitrary runtime entities, NOT literal words):",
+  ...examples,
+  "IMPORTANT: customer/product/supplier names in examples are placeholders. Never prefer a name from an example over the exact name spoken by the user or the live business records.",
  ].join("\n");
 }
