@@ -19,7 +19,7 @@ export async function POST(req:Request){
     const conversation=existingConversation ?? await db.conversation.create({data:{businessId:s.businessId,key:conversationId},include:{messages:{orderBy:{createdAt:"desc"},take:16}}});
 
     const pending:any=conversation.pendingAction||null;
-    const lastExecuted=await db.aIAction.findFirst({where:{businessId:s.businessId,status:"EXECUTED"},orderBy:{createdAt:"desc"},select:{intent:true,result:true}});
+    const lastExecuted=await db.aIAction.findFirst({where:{businessId:s.businessId,status:"EXECUTED"},orderBy:{createdAt:"desc"},select:{id:true,intent:true,result:true}});
 
     // A pending financial action is NOT a global mode. Every new utterance gets a
     // fresh interpretation first. Only explicit confirmation/cancellation, a clear
@@ -58,7 +58,7 @@ export async function POST(req:Request){
       productId:conversation.productId,
       lastIntent:conversation.lastIntent,
       history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text})),
-      lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null
+      lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null,lastActionId:lastExecuted?.id||null
     });
 
     // Read-only requests always win over pending mutation state.
@@ -79,7 +79,7 @@ export async function POST(req:Request){
     if(pending?.actionId && !clearlyNew && !affirmative && !negative){
       const pendingMutation=new Set([
         "RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE",
-        "CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","MANAGE_ENTITY","DELETE_CUSTOMER"
+        "CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","UNDO_LAST_ACTION","MANAGE_ENTITY","DELETE_CUSTOMER"
       ]);
       const sameIntent=fresh.intent===pending.intent;
       const patchLike=fresh.intent==="UNKNOWN" || sameIntent ||
@@ -93,7 +93,7 @@ export async function POST(req:Request){
           pendingEntities:pending.entities,
           pendingQuestion:pending.question,
           history:(conversation.messages||[]).slice().reverse().map((m:any)=>({role:m.role,text:m.text})),
-          lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null
+          lastResult:lastExecuted?{intent:lastExecuted.intent,...(lastExecuted.result as any)}:null,lastActionId:lastExecuted?.id||null
         });
         result=patched;
         continuingPending=true;
@@ -121,7 +121,7 @@ export async function POST(req:Request){
       actionId=action.id;
     }
 
-    const mutation=!readOnlyIntents.has(result.intent) && (result.risk!=="LOW" || result.requiresConfirmation || ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","MANAGE_ENTITY","DELETE_CUSTOMER"].includes(result.intent));
+    const mutation=!readOnlyIntents.has(result.intent) && (result.risk!=="LOW" || result.requiresConfirmation || ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CREATE_PURCHASE","CREATE_EXPENSE","CREATE_REMINDER","ADJUST_STOCK","UNDO_LAST_ACTION","MANAGE_ENTITY","DELETE_CUSTOMER"].includes(result.intent));
     // NEVER discard an unresolved mutation. Clarifications are part of the same
     // pending operation: the next user message patches this action rather than
     // starting a new one. This is the core fix for repeated reminder/customer

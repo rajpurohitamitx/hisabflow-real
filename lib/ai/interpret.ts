@@ -295,7 +295,7 @@ You must:
 10. For informational questions, answer naturally from the business data request and do not create a mutation.
 11. If the request is casual/non-business, respond naturally without pretending it is a transaction.
 
-Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, SETTLE_OUTSTANDING, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, CUSTOMER_TOP_TRANSACTIONS, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, MANAGE_ENTITY, UNKNOWN. MANAGE_ENTITY is the universal conversational CRUD intent for customers, products, suppliers, expenses and reminders. Use entities {operation:"CREATE|UPDATE|ARCHIVE|CANCEL|COMPLETE", entityType:"CUSTOMER|PRODUCT|SUPPLIER|EXPENSE|REMINDER|SALE|PURCHASE|PAYMENT", entityId, name, fields:{...}, query, matches}. Never invent entityId; resolve explicit names from live records or ask a clarification.
+Supported action intents are not a language restriction. Choose the best one from this set when applicable: RECEIVE_PAYMENT, SETTLE_OUTSTANDING, CREATE_SALE, CREATE_PURCHASE, CREATE_EXPENSE, CREATE_REMINDER, CUSTOMER_BALANCE, CUSTOMER_STATEMENT, CUSTOMER_TOP_TRANSACTIONS, SALES_TODAY, LOW_STOCK, DAILY_BRIEFING, OUTSTANDING_CUSTOMERS, SUPPLIER_DUES, PROFIT_SUMMARY, SEARCH_BUSINESS, ADJUST_STOCK, GENERAL_BUSINESS_QUERY, SALES_ANALYSIS, UNDO_LAST_ACTION, MANAGE_ENTITY, UNKNOWN. MANAGE_ENTITY is the universal conversational CRUD intent for customers, products, suppliers, expenses and reminders. Use entities {operation:"CREATE|UPDATE|ARCHIVE|CANCEL|COMPLETE", entityType:"CUSTOMER|PRODUCT|SUPPLIER|EXPENSE|REMINDER|SALE|PURCHASE|PAYMENT", entityId, name, fields:{...}, query, matches}. Never invent entityId; resolve explicit names from live records or ask a clarification.
 
 For RECEIVE_PAYMENT, entities may include: customerName, customerQuery, customerId, amount, paymentMethod, currency, matches, customerResolution, proposedCustomerName, proposedCustomerAddress, createCustomer.
 For CREATE_SALE/CREATE_PURCHASE, entities may include items [{productName, productId, quantity, unitPrice}], customer/supplier fields, amount/payment, paymentMethod and notes. For MANAGE_ENTITY, preserve the user's intended operation and fields exactly; explicit names override old context, while pronouns may use pending context.
@@ -455,6 +455,19 @@ Conversation context: ${JSON.stringify(context||{})}\nLast structured business r
         parsed.intent='CREATE_SALE';
       }
 
+      // Explicit undo/reverse requests are never treated as a new stock adjustment.
+      // They target the immediately previous executed AI action and are handled by the
+      // deterministic execution layer.
+      if (/^(undo|undo that|reverse that|cancel that|take that back|no undo it|reverse it)$/i.test(lowerText) ||
+          /\b(undo|reverse|take it back)\b/i.test(lowerText) && context?.lastIntent) {
+        parsed.intent='UNDO_LAST_ACTION';
+        parsed.entities={lastActionId:context?.lastActionId||null};
+        parsed.risk='HIGH';
+        parsed.requiresConfirmation=true;
+        parsed.needsClarification=false;
+        parsed.response='I can reverse the immediately previous AI action. Should I undo it?';
+      }
+
       // FINAL SEMANTIC SAFETY GATE: protect the accounting engine from common
       // high-impact misclassifications. This is not a user-facing command parser;
       // it validates the model's proposal against the actual language.
@@ -536,7 +549,8 @@ Conversation context: ${JSON.stringify(context||{})}\nLast structured business r
           const itemText=Array.isArray(e.items)?e.items.map((x:any)=>`${x.displayQuantity||x.quantity} × ${x.productName||x.name||"item"}${x.rate!=null?` at ₹${Number(x.rate).toLocaleString("en-IN")}/${x.unit||"unit"}`:x.sellingPrice!=null?` at ₹${Number(x.sellingPrice).toLocaleString("en-IN")}/${x.unit||"unit"}`:""}`).join(", "):"";
           const derivedAmount=Array.isArray(e.items)?e.items.reduce((sum:number,x:any)=>sum+(x.quantity!=null&&x.rate!=null?Number(x.quantity)*Number(x.rate):x.amount!=null?Number(x.amount):0),0):0;
           if(Array.isArray(e.items) && derivedAmount>0) e.amount=derivedAmount;
-          const amount=derivedAmount>0?`₹${derivedAmount.toLocaleString("en-IN")}`:"";
+          const confirmationAmount=derivedAmount>0?derivedAmount:(e.amount!=null&&!Number.isNaN(Number(e.amount))?Number(e.amount):0);
+          const amount=confirmationAmount>0?`₹${confirmationAmount.toLocaleString("en-IN")}`:"";
           const payment=e.payment!=null?`₹${Number(e.payment).toLocaleString("en-IN")} paid`:"";
           const method=e.paymentMethod?` via ${String(e.paymentMethod).toLowerCase()}`:"";
           if(parsed.intent==="RECEIVE_PAYMENT") parsed.response=`I understood: ${customer||"the customer"} ${e.createCustomer?"will be added and ":""}will pay ${amount}${method}. Should I record it?`;

@@ -30,6 +30,70 @@ async function bindCustomer(businessId:string,e:any,allowCreate:boolean){
   return {customerId,customerName};
 }
 
+
+async function bindProduct(businessId:string,e:any){
+  const explicitName=String(e.productName||e.productQuery||e.proposedProductName||"").trim();
+  let productId=typeof e.productId==="string"?e.productId:undefined;
+
+  // An explicitly spoken product name always outranks a stale productId from
+  // an earlier turn. This is critical for conversational corrections such as
+  // "Bajra, not Silver Chain".
+  if(explicitName){
+    const matches=await db.product.findMany({
+      where:{businessId,archived:false,name:{equals:explicitName,mode:"insensitive"}},
+      take:5,
+      select:{id:true,name:true,sku:true,unit:true,sellingPrice:true,stock:true}
+    });
+    if(matches.length>1) return {error:`I found multiple products named ${explicitName}. Please choose one.`,productMatches:matches};
+    if(matches.length===1){
+      productId=matches[0].id;
+      e.productName=matches[0].name;
+      e.productUnit=matches[0].unit;
+      e.sellingPrice=Number(matches[0].sellingPrice||0);
+    } else {
+      return {error:`I couldn't find ${explicitName}. Please choose an existing product.`,requiresProduct:true};
+    }
+  } else if(productId){
+    const bound=await db.product.findFirst({
+      where:{id:productId,businessId,archived:false},
+      select:{id:true,name:true,sku:true,unit:true,sellingPrice:true,stock:true}
+    });
+    if(!bound) return {error:"The selected product no longer exists. Please choose the product again.",requiresProduct:true};
+    e.productName=bound.name;
+    e.productUnit=bound.unit;
+    e.sellingPrice=Number(bound.sellingPrice||0);
+  }
+  return {productId};
+}
+
+async function bindSaleItems(businessId:string,e:any){
+  if(!Array.isArray(e.items)||!e.items.length) return {items:e.items};
+  const items=[];
+  for(const raw of e.items){
+    const item={...raw};
+    const explicitName=String(item.productName||item.name||"").trim();
+    let productId=typeof item.productId==="string"?item.productId:undefined;
+    let product:any=null;
+    if(explicitName){
+      const matches=await db.product.findMany({where:{businessId,archived:false,name:{equals:explicitName,mode:"insensitive"}},take:5,select:{id:true,name:true,unit:true,sellingPrice:true,stock:true,sku:true}});
+      if(matches.length>1) return {error:`I found multiple products named ${explicitName}. Please choose one.`,productMatches:matches};
+      if(matches.length===0) return {error:`I couldn't find ${explicitName}. Please choose an existing product.`,requiresProduct:true};
+      product=matches[0]; productId=product.id;
+    } else if(productId){
+      product=await db.product.findFirst({where:{id:productId,businessId,archived:false},select:{id:true,name:true,unit:true,sellingPrice:true,stock:true,sku:true}});
+      if(!product) return {error:"The selected product no longer exists. Please choose the product again.",requiresProduct:true};
+    }
+    if(!productId) return {error:"Which product should I use?",requiresProduct:true};
+    item.productId=productId;
+    item.productName=product.name;
+    item.unit=product.unit;
+    item.sellingPrice=Number(product.sellingPrice||0);
+    if(item.rate==null) item.rate=Number(product.sellingPrice||0);
+    items.push(item);
+  }
+  return {items};
+}
+
 function OP_SAFE_CREATE(op:string){ return op === "CREATE"; }
 
 function dateRangeFromText(input:string){
@@ -100,6 +164,16 @@ export async function POST(req:Request){
     const boundCustomer=await bindCustomer(s.businessId,e,allowCustomerCreate);
     if((boundCustomer as any).error && ["RECEIVE_PAYMENT","SETTLE_OUTSTANDING","CREATE_SALE","CUSTOMER_STATEMENT","CUSTOMER_BALANCE","CUSTOMER_TOP_TRANSACTIONS","CREATE_REMINDER","DELETE_CUSTOMER"].includes(action.intent)) return NextResponse.json(boundCustomer,{status:409});
     if((boundCustomer as any).customerId){ e.customerId=(boundCustomer as any).customerId; e.customerName=(boundCustomer as any).customerName; }
+    if(action.intent === "CREATE_SALE"){
+      const boundItems=await bindSaleItems(s.businessId,e);
+      if((boundItems as any).error) return NextResponse.json(boundItems,{status:409});
+      e.items=(boundItems as any).items;
+    }
+    if(action.intent === "ADJUST_STOCK"){
+      const boundProduct=await bindProduct(s.businessId,e);
+      if((boundProduct as any).error) return NextResponse.json(boundProduct,{status:409});
+      e.productId=(boundProduct as any).productId;
+    }
     if(["CREATE_PURCHASE"].includes(action.intent)){
       const boundSupplier=await bindSupplier(s.businessId,e);
       if((boundSupplier as any).error) return NextResponse.json(boundSupplier,{status:409});
@@ -129,7 +203,18 @@ export async function POST(req:Request){
       if(data.occurredAt) data.occurredAt=new Date(data.occurredAt);
       if(OP_SAFE_CREATE(op)) {
         if(type==="CUSTOMER") { if(!data.name) data.name=name; if(!data.name) throw new Error("Customer name is required."); result=await db.customer.create({data:{businessId:s.businessId,name:String(data.name),phone:data.phone||null,email:data.email||null,address:data.address||null,gstin:data.gstin||null,notes:data.notes||null,creditLimit:data.creditLimit||new Prisma.Decimal(0)}}); }
-        else if(type==="PRODUCT") { if(!data.name) data.name=name; if(!data.name) throw new Error("Product name is required."); result=await db.product.create({data:{businessId:s.businessId,name:String(data.name),sku:data.sku||null,barcode:data.barcode||null,category:data.category||null,unit:data.unit||"piece",purchasePrice:data.purchasePrice||new Prisma.Decimal(0),sellingPrice:data.sellingPrice||new Prisma.Decimal(0),stock:data.stock?new Prisma.Decimal(String(data.stock)):new Prisma.Decimal(0),reorderPoint:data.reorderPoint||new Prisma.Decimal(0),gstRate:data.gstRate||new Prisma.Decimal(0)}}); }
+        else if(type==="PRODUCT") {
+          if(!data.name) data.name=name;
+          if(!data.name) throw new Error("Product name is required.");
+          const openingStockRaw=(data.stock ?? data.openingStock ?? e.stock ?? e.openingStock ?? e.quantity ?? null);
+          const openingStock=openingStockRaw==null?new Prisma.Decimal(0):new Prisma.Decimal(String(openingStockRaw));
+          if(openingStock.lt(0)) throw new Error("Opening stock cannot be negative.");
+          result=await db.$transaction(async tx=>{
+            const product=await tx.product.create({data:{businessId:s.businessId,name:String(data.name),sku:data.sku||null,barcode:data.barcode||null,category:data.category||null,unit:data.unit||e.unit||"piece",purchasePrice:data.purchasePrice||new Prisma.Decimal(0),sellingPrice:data.sellingPrice||new Prisma.Decimal(0),stock:openingStock,reorderPoint:data.reorderPoint||new Prisma.Decimal(0),gstRate:data.gstRate||new Prisma.Decimal(0)}});
+            if(openingStock.gt(0)) await tx.inventoryMovement.create({data:{businessId:s.businessId,productId:product.id,type:"ADJUSTMENT",quantity:openingStock,beforeStock:new Prisma.Decimal(0),afterStock:openingStock,referenceType:"AI",referenceId:action.id,note:"Opening stock"}});
+            return product;
+          });
+        }
         else if(type==="SUPPLIER") { if(!data.name) data.name=name; if(!data.name) throw new Error("Supplier name is required."); result=await db.supplier.create({data:{businessId:s.businessId,name:String(data.name),phone:data.phone||null,email:data.email||null,address:data.address||null,gstin:data.gstin||null,notes:data.notes||null}}); }
         else if(type==="EXPENSE") { if(data.amount==null||!data.category) throw new Error("Expense needs an amount and category."); result=await db.expense.create({data:{businessId:s.businessId,category:String(data.category),amount:data.amount,description:data.description||null,paymentMethod:data.paymentMethod||"CASH",occurredAt:data.occurredAt||new Date(),source:"ai"}}); }
         else if(type==="REMINDER") { if(!data.title||!data.dueAt) throw new Error("Reminder needs a title and due date."); result=await db.reminder.create({data:{businessId:s.businessId,title:String(data.title),dueAt:data.dueAt,channel:data.channel||"in_app",notes:data.notes||null,customerId:e.customerId||null}}); }
@@ -160,6 +245,31 @@ export async function POST(req:Request){
       await Promise.all(conversations.filter((c:any)=>c.pendingAction&&String(c.pendingAction.actionId||"")===action.id).map((c:any)=>db.conversation.update({where:{id:c.id},data:{pendingAction:Prisma.DbNull}})));
       return NextResponse.json({ok:true,result});
     }
+    if(action.intent === "UNDO_LAST_ACTION"){
+      const targetId=String(e.lastActionId||"").trim();
+      if(!targetId) return NextResponse.json({error:"I couldn't identify the previous action to undo safely."},{status:409});
+      const target=await db.aIAction.findFirst({where:{id:targetId,businessId:s.businessId,status:"EXECUTED"}});
+      if(!target) return NextResponse.json({error:"The previous action is no longer available to reverse safely."},{status:409});
+      if(target.intent !== "ADJUST_STOCK") return NextResponse.json({error:`I can safely undo the previous stock adjustment, but I won't reverse a ${target.intent} automatically.`},{status:409});
+      const movement=await db.inventoryMovement.findFirst({where:{businessId:s.businessId,referenceType:"AI",referenceId:target.id,type:"ADJUSTMENT"},orderBy:{occurredAt:"desc"}});
+      if(!movement) return NextResponse.json({error:"I couldn't find the inventory movement created by that action."},{status:409});
+      const product=await db.product.findFirst({where:{id:movement.productId,businessId:s.businessId,archived:false}});
+      if(!product) return NextResponse.json({error:"The product from the previous adjustment no longer exists."},{status:409});
+      if(!product.stock.eq(movement.afterStock)) return NextResponse.json({error:`${product.name} changed after that adjustment, so I won't overwrite the newer stock. I can show the current history instead.`},{status:409});
+      const reversed=await db.$transaction(async tx=>{
+        const updated=await tx.product.update({where:{id:product.id},data:{stock:movement.beforeStock}});
+        await tx.inventoryMovement.create({data:{businessId:s.businessId,productId:product.id,type:"ADJUSTMENT",quantity:movement.quantity.neg(),beforeStock:movement.afterStock,afterStock:movement.beforeStock,referenceType:"AI_UNDO",referenceId:action.id,note:`Reversal of AI action ${target.id}`}});
+        return updated;
+      });
+      result={message:`Undone. ${reversed.name} stock is back to ${reversed.stock}.`,product:reversed,reversedActionId:target.id};
+      await db.aIAction.update({where:{id:target.id},data:{result:{...(target.result as any||{}),reversed:true,reversedBy:action.id} as any}});
+      await db.aIAction.update({where:{id:action.id},data:{status:"EXECUTED",result:result as any}});
+      await db.auditLog.create({data:{businessId:s.businessId,userId:s.user.id,actorType:"AI",action:"AI_ACTION_UNDONE",entityType:"AIAction",entityId:action.id,after:result as any}});
+      const conversations=await db.conversation.findMany({where:{businessId:s.businessId},select:{id:true,pendingAction:true}});
+      await Promise.all(conversations.filter((c:any)=>c.pendingAction&&String(c.pendingAction.actionId||"")===action.id).map((c:any)=>db.conversation.update({where:{id:c.id},data:{pendingAction:Prisma.DbNull}})));
+      return NextResponse.json({ok:true,result});
+    }
+
     switch(action.intent){
       case "RECEIVE_PAYMENT": {
         if(!e.amount) return NextResponse.json({error:"What amount did the customer pay?"},{status:409});
@@ -190,7 +300,9 @@ export async function POST(req:Request){
         {const fields=(e.fields&&typeof e.fields==='object')?e.fields:{}; const title=String(fields.title||e.title||e.notes||"Reminder").trim(); const rawDue=fields.dueAt||fields.dueDate||e.dueAt||e.dueDate; if(!title) return NextResponse.json({error:"Reminder needs a title."},{status:409}); if(!rawDue) return NextResponse.json({error:"Reminder needs a due date."},{status:409}); const due=new Date(rawDue); if(Number.isNaN(due.getTime())) return NextResponse.json({error:"I couldn't understand that reminder date/time."},{status:409}); const r=await db.reminder.create({data:{businessId:s.businessId,customerId:e.customerId||null,title,dueAt:due,channel:String(fields.channel||e.channel||"in_app"),notes:fields.notes||e.notes||null}});result={message:`Reminder “${title}” created for ${due.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}.`,reminder:r};}
         break;
       case "CUSTOMER_STATEMENT":
-        {if(!e.customerId)return NextResponse.json({error:"Which customer do you mean?",requiresCustomer:true,matches:e.matches||[]},{status:409});const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));result={message:`Statement prepared for ${customer.name}.`,customer:customer.name,statement};}
+        {if(!e.customerId)return NextResponse.json({error:"Which customer do you mean?",requiresCustomer:true,matches:e.matches||[]},{status:409});const customer=await db.customer.findFirst({where:{id:e.customerId,businessId:s.businessId},include:{sales:{orderBy:{occurredAt:"asc"}},payments:{orderBy:{occurredAt:"asc"}}}});if(!customer)return NextResponse.json({error:"Customer not found."},{status:404});const statement=[...customer.sales.map(x=>({date:x.occurredAt,type:"Invoice",reference:x.invoiceNumber,debit:Number(x.total),credit:0})),...customer.payments.map(x=>({date:x.occurredAt,type:"Payment",reference:x.id.slice(-8),debit:0,credit:Number(x.amount)}))].sort((a,b)=>+new Date(a.date)-+new Date(b.date));const running={value:0};
+          const lines=statement.map((x:any,i:number)=>{running.value+=x.debit-x.credit;return `${i+1}. ${new Date(x.date).toLocaleDateString("en-IN")} — ${x.type} ${x.reference} — ${x.debit?money(x.debit):money(x.credit)}${running.value>0?` — due ${money(running.value)}`:""}`;}).join("\n");
+          result={message:`${customer.name}'s account summary:\n${lines||"No sales or payments recorded."}\nCurrent outstanding: ${money(Math.max(0,running.value))}`,customer:customer.name,statement,currentOutstanding:Math.max(0,running.value)};}
         break;
       case "CREATE_EXPENSE":
         result=await createExpense({businessId:s.businessId,userId:s.user.id,category:e.category||"General",amount:e.amount,description:e.description,source:"ai"});
